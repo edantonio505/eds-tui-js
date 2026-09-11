@@ -11,7 +11,10 @@
     "ask": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist/**/*.js",
+    "dist/**/*.js.map",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.js.map"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
