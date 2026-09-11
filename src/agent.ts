@@ -32,7 +32,7 @@ const WRAP_UP_NUDGE = (left: number): string =>
   "otherwise answer now from what you already have, and say which parts you could " +
   "not confirm.";
 
-const FINAL_ANSWER_NUDGE =
+export const FINAL_ANSWER_NUDGE =
   "You have used the entire tool-call budget for this request. No further commands " +
   "will run. Answer now using only what the commands above already showed you. " +
   "State the best conclusion the evidence supports, and say plainly which parts you " +
