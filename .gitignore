@@ -1,4 +1,15 @@
 node_modules/
-dist/
 *.tgz
 .DS_Store
+
+# dist/ IS committed, deliberately — see the commit that added this comment.
+# npm's git-dependency "prepare" lifecycle turned out unreliable in
+# practice (confirmed by directly testing `npm install -g git+https://...`
+# against this repo twice): devDependencies were not reliably installed
+# before prepare ran, so a build-at-install-time approach kept failing.
+# Committing dist/ means a git-based install has real, working code to
+# link regardless of that. `npm publish` still rebuilds dist/ fresh from
+# source at publish time either way (prepublishOnly), so this only matters
+# for git-based installs, not the real npm-registry path.
+dist/**/*.test.js
+dist/**/*.test.js.map
