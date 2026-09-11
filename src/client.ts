@@ -12,6 +12,7 @@
 
 import { Ollama } from "ollama";
 import { Agent, fetch as undiciFetch } from "undici";
+import { loadCredentials } from "./credentials.js";
 
 export const DEFAULT_MAIN_MODEL = "qwen3.8:latest";
 export const DEFAULT_SMALL_MODEL = "ornith:35b";
@@ -93,13 +94,36 @@ async function resolveViaMiniclosedai(
   return { client, mainModel: main, smallModel: small };
 }
 
-function fallbackClient(
+// Precedence, most explicit first: EDS_TUI_URL/EDS_TUI_TOKEN env vars (an
+// explicit override for this one invocation) beat a saved `ask --login`,
+// which beats the hardcoded default — same "flag > saved config > default"
+// shape used elsewhere (e.g. resolve-model.ts's own precedence). A env var
+// set without its pair (e.g. EDS_TUI_URL set but no EDS_TUI_TOKEN) still
+// wins over the saved login entirely, matching the principle that an
+// explicit env var always means "use exactly this, don't guess further" —
+// picking a saved token to pair with an explicitly-set URL would connect
+// to a host the user didn't ask that credential to be used with.
+// credentialsPath is injectable (defaults to the real CREDENTIALS_FILE)
+// purely for testing — matches the same pattern skills.ts/model-pool.ts
+// already use for their own paths.
+export function fallbackClient(
   desiredMain: string,
   desiredSmall: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  credentialsPath?: string
 ): ResolvedClient {
-  const host = stripTrailingSlashes(env.EDS_TUI_URL ?? DEFAULT_HOST);
-  const token = env.EDS_TUI_TOKEN ?? "";
+  let host: string;
+  let token: string;
+
+  if (env.EDS_TUI_URL || env.EDS_TUI_TOKEN) {
+    host = stripTrailingSlashes(env.EDS_TUI_URL ?? DEFAULT_HOST);
+    token = env.EDS_TUI_TOKEN ?? "";
+  } else {
+    const saved = loadCredentials(credentialsPath);
+    host = stripTrailingSlashes(saved?.hubUrl ?? DEFAULT_HOST);
+    token = saved?.token ?? "";
+  }
+
   const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
   const client = new Ollama({ host, headers });
   return { client, mainModel: desiredMain, smallModel: desiredSmall };

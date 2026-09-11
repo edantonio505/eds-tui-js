@@ -147,6 +147,18 @@ async function main() {
         await selfCheck();
         return;
     }
+    if (argv.includes("--login")) {
+        const { login } = await import("./login.js");
+        await login();
+    }
+    if (argv.includes("--logout")) {
+        const { logout } = await import("./login.js");
+        logout();
+    }
+    if (argv.includes("--whoami")) {
+        const { whoami } = await import("./login.js");
+        await whoami();
+    }
     const isContinue = argv.includes("--continue");
     const forceFast = argv.includes("--fast");
     const forceSmart = argv.includes("--smart");

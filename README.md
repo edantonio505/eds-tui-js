@@ -30,6 +30,31 @@ export EDS_TUI_SMALL_MODEL="ornith:35b"  # optional, model for simpler requests
 
 Both models must be served from the same Ollama host and support tool calling.
 
+### Logging in (recommended over hand-editing rc files)
+
+```bash
+ask --login
+```
+
+Prompts for the hub URL and a relay API key (mint one at `<hub-url>/admin/api-keys`
+— any logged-in miniaicloud user can create one, not just admins), **validates
+it against a real request before saving anything**, and stores it in
+`~/.eds_tui/credentials.json`. This is what a stale/wrong `EDS_TUI_TOKEN` used
+to look like: it would fail silently somewhere deep in a real conversation on
+whatever machine had the bad value in its shell rc file, with no clear signal
+about what was actually wrong. `--login` catches that immediately instead —
+an invalid token is rejected right there, before it's ever saved.
+
+```bash
+ask --whoami    # show the saved login and re-check it still works
+ask --logout    # remove the saved login
+```
+
+`EDS_TUI_URL`/`EDS_TUI_TOKEN` env vars, if set, always take precedence over a
+saved login — same "explicit override beats saved config beats default" shape
+used elsewhere. `--login` warns you if it detects those env vars are already
+set, since they'd otherwise silently shadow what you just logged in with.
+
 ### Auto-connecting through miniclosedai
 
 If a [miniclosedai](https://github.com/edantonio505/miniclosedai) instance is
@@ -61,6 +86,9 @@ ask --fast           # force the small model for this request
 ask --smart          # force the main model for this request
 ask --skills         # list installed skills
 ask --skill-new NAME # scaffold a new skill
+ask --login          # save a validated hub URL + relay API key to ~/.eds_tui/credentials.json
+ask --whoami         # show the saved login and re-check it still works
+ask --logout         # remove the saved login
 ask --test           # self-check: prove routing, skills, delegation, escalation and specialist routing work
 ask --upgrade        # update to the latest version (npm install -g eds-tui@latest)
 ```
