@@ -10,10 +10,13 @@
 import chalk from "chalk";
 import boxen from "boxen";
 import ora from "ora";
+import stringWidth from "string-width";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 
 marked.use(markedTerminal() as any);
+
+const BOX_BORDER_AND_PADDING_COLS = 6; // 1 border char + 2 padding each side, ×2 sides
 
 /** Run fn() while a spinner shows `text`; the spinner is always stopped before fn's result is used, so callers never race it with their own output. */
 export async function withSpinner<T>(text: string, fn: () => Promise<T>): Promise<T> {
@@ -35,6 +38,29 @@ export function printHeader(cwd: string): void {
 
 export async function renderAnswer(content: string): Promise<void> {
   const rendered = (await marked.parse(content || "")).toString().trimEnd();
+
+  // boxen just wraps pre-rendered text with border characters — unlike
+  // Rich's Panel, it has no content-aware reflow of its own. A wide
+  // element (a markdown table is the real case that surfaced this: its
+  // column widths come from cli-table3 sizing to cell CONTENT, not the
+  // terminal) can already be as wide as the terminal before boxen adds its
+  // border+padding on top, and the terminal then hard-wraps the overflow,
+  // breaking the box-drawing alignment. Rather than trying to make boxen
+  // reflow arbitrary rendered Markdown (genuinely Rich-Panel-shaped
+  // complexity boxen doesn't have), fall back to an unboxed print — still
+  // clearly delimited, just not bordered — whenever the content is too
+  // wide for a border to fit around cleanly.
+  const terminalCols = process.stdout.columns || 80;
+  const widestLine = Math.max(0, ...rendered.split("\n").map((line) => stringWidth(line)));
+
+  if (widestLine + BOX_BORDER_AND_PADDING_COLS > terminalCols) {
+    console.log(chalk.dim("─".repeat(Math.min(terminalCols, 80))));
+    console.log(rendered);
+    console.log(chalk.dim("─".repeat(Math.min(terminalCols, 80))));
+    console.log();
+    return;
+  }
+
   console.log(
     boxen(rendered, { borderStyle: "round", borderColor: "cyan", padding: { top: 1, bottom: 1, left: 2, right: 2 } })
   );
