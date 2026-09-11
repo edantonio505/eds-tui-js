@@ -107,6 +107,19 @@ export interface AgenticLoopDeps {
   cwd: string;
   delegateTask: DelegateTaskFn;
   saveHistory: SaveHistoryFn;
+  /**
+   * Override the real SMALL_MAX_TURNS/HARD_MAX_TURNS constants for this run
+   * only — real callers never set these; they default to the real exported
+   * constants. Exists so selftest.ts can force escalation/capping quickly
+   * and deterministically without waiting on a real model to naturally
+   * burn 6-14 turns. The Python original achieves the same thing by
+   * temporarily mutating its module globals (`globals()["SMALL_MAX_TURNS"]
+   * = 1`); SMALL_MAX_TURNS/HARD_MAX_TURNS here are real `const` exports
+   * (safer for normal use), so this explicit, opt-in seam is the TS
+   * equivalent rather than a fragile global-mutation hack.
+   */
+  smallMaxTurns?: number;
+  hardMaxTurns?: number;
 }
 
 /**
@@ -167,6 +180,9 @@ export async function agenticLoop(
   // be answered from here instead of spending a round to learn nothing.
   const seen = new Map<string, string>();
 
+  const hardMaxTurns = deps.hardMaxTurns ?? HARD_MAX_TURNS;
+  const smallMaxTurns = deps.smallMaxTurns ?? SMALL_MAX_TURNS;
+
   let activeModel = initialActiveModel;
   let turns = 0;
   let total = 0;
@@ -176,13 +192,13 @@ export async function agenticLoop(
     total += 1;
     stats.turns = total;
 
-    if (turns > HARD_MAX_TURNS) {
+    if (turns > hardMaxTurns) {
       stats.capped = true;
       ui.printBudgetSpent();
       return finalAnswer(deps, messages, activeModel);
     }
 
-    if (activeModel === deps.smallModel && turns > SMALL_MAX_TURNS) {
+    if (activeModel === deps.smallModel && turns > smallMaxTurns) {
       ui.printEscalating(deps.mainModel);
       activeModel = deps.mainModel;
       stats.escalated = true;
@@ -251,7 +267,7 @@ export async function agenticLoop(
       // Warn before the cap rather than at it. A model that knows it has
       // two rounds left will usually conclude; one that is cut off without
       // notice never gets the chance.
-      const left = HARD_MAX_TURNS - turns;
+      const left = hardMaxTurns - turns;
       const lastMessage = messages[messages.length - 1];
       if (left > 0 && left <= 2 && lastMessage?.role === "tool") {
         lastMessage.content += "\n\n" + WRAP_UP_NUDGE(left);
