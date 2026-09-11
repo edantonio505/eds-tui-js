@@ -70,7 +70,11 @@ export function buildSystemPrompt(opts: BuildSystemPromptOptions): string {
     "gathering listings, counting things, checking status — and spend your own effort " +
     "on the reasoning and the final answer. Each delegated task must stand alone, since " +
     "the helper cannot see this conversation. Run commands yourself when the work is " +
-    "trivial or needs your judgement. " +
+    "trivial or needs your judgement. If a delegate_tasks tool is also available and you " +
+    "have several INDEPENDENT pieces of legwork — ones that don't depend on each other's " +
+    "results — hand them all to it at once rather than calling delegate_task repeatedly: " +
+    "they run at the same time as each other, not one after another. Use delegate_task " +
+    "for one task, delegate_tasks for several unrelated ones. " +
     "If a create_skill tool is available to you, use it when the user asks you to " +
     "remember a procedure, or to write or update a skill. Put the specific subject in " +
     "the description — that one line is all that future requests are matched against — " +

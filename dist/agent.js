@@ -18,7 +18,7 @@
 //      behavior; conflating them would be a real, subtle bug.
 import * as skills from "./skills.js";
 import { runCommandOnce } from "./exec.js";
-import { RUN_COMMAND_TOOL, DELEGATE_TOOL, LOAD_SKILL_TOOL, CREATE_SKILL_TOOL, SHELL_TOOLS } from "./tools.js";
+import { RUN_COMMAND_TOOL, DELEGATE_TOOL, DELEGATE_TASKS_TOOL, LOAD_SKILL_TOOL, CREATE_SKILL_TOOL, SHELL_TOOLS, } from "./tools.js";
 import * as ui from "./ui.js";
 import { pickSpecialistModel } from "./model-pool.js";
 export const SMALL_MAX_TURNS = 6; // tool-call rounds before escalating off the small model
@@ -50,7 +50,7 @@ export const FINAL_ANSWER_NUDGE = "You have used the entire tool-call budget for
 export function toolsFor(activeModel, smallModel) {
     if (activeModel === smallModel)
         return SHELL_TOOLS;
-    const tools = [RUN_COMMAND_TOOL, DELEGATE_TOOL, CREATE_SKILL_TOOL];
+    const tools = [RUN_COMMAND_TOOL, DELEGATE_TOOL, DELEGATE_TASKS_TOOL, CREATE_SKILL_TOOL];
     if (skills.discover().size > 0)
         tools.push(LOAD_SKILL_TOOL); // nothing installed, nothing to load
     return tools;
@@ -93,6 +93,24 @@ function createSkill(args) {
     ui.printCreateSkillSuccess(path, skill.name, skill.model);
     return (`Saved and verified: ${path} parses back and registers as '${skill.name}' ` +
         `(model ${skill.model}). It is available from the next ask run onward.`);
+}
+/**
+ * Dispatch N independent tasks to N sub-agents CONCURRENTLY (Promise.all,
+ * not one after another) and combine their reports. Each call reuses the
+ * exact same delegateTask function the single-task path uses — no new
+ * sub-agent machinery, just running several instances of the existing one
+ * at once. Real parallelism across different physical nodes serving the
+ * same model comes for free from the relay's own round-robin backend
+ * selection (verified directly against miniaicloud's source): concurrent
+ * requests for the same model name land on different registered backends,
+ * ask never needs to address a specific node itself.
+ */
+async function delegateTasksInParallel(deps, tasks) {
+    if (tasks.length === 0)
+        return "No tasks were given to delegate_tasks.";
+    ui.printDelegatingTasksHeader(tasks);
+    const reports = await Promise.all(tasks.map((task) => deps.delegateTask(deps.client, task)));
+    return tasks.map((task, i) => `Task ${i + 1}: ${task}\nResult: ${reports[i]}`).join("\n\n");
 }
 /**
  * Make one last call with no tools attached, so the model must answer from
@@ -247,6 +265,11 @@ export async function agenticLoop(deps, messages, initialActiveModel, stats = {}
                 if (tc.function.name === "delegate_task") {
                     stats.delegations = (stats.delegations ?? 0) + 1;
                     output = await deps.delegateTask(deps.client, args.task ?? "");
+                }
+                else if (tc.function.name === "delegate_tasks") {
+                    const tasks = Array.isArray(args.tasks) ? args.tasks.filter((t) => typeof t === "string") : [];
+                    stats.delegations = (stats.delegations ?? 0) + tasks.length;
+                    output = await delegateTasksInParallel(deps, tasks);
                 }
                 else if (tc.function.name === "load_skill") {
                     stats.skillsLoaded = (stats.skillsLoaded ?? 0) + 1;

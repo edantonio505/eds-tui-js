@@ -49,6 +49,36 @@ export const DELEGATE_TOOL: Tool = {
   },
 };
 
+export const DELEGATE_TASKS_TOOL: Tool = {
+  type: "function",
+  function: {
+    name: "delegate_tasks",
+    description:
+      "Hand SEVERAL independent, self-contained subtasks to faster assistants that run " +
+      "at the same time as each other, not one after another — use this instead of " +
+      "delegate_task when you have multiple pieces of mechanical legwork that don't " +
+      "depend on one another's results (e.g. reviewing several files, checking several " +
+      "independent things). Each task gets its own assistant with the same shell access " +
+      "you have; none of them can see your conversation or each other, so every task " +
+      "must be a complete instruction on its own. Returns each task's report, labeled by " +
+      "task number. If you only have ONE task, use delegate_task instead — this tool is " +
+      "for genuinely independent work you want done in parallel.",
+    parameters: {
+      type: "object",
+      properties: {
+        tasks: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Two or more complete, self-contained instructions, each independent of the " +
+            "others, e.g. ['Count the *.py files in src/', 'Count the *.py files in tests/']",
+        },
+      },
+      required: ["tasks"],
+    },
+  },
+};
+
 export const LOAD_SKILL_TOOL: Tool = {
   type: "function",
   function: {

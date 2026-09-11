@@ -20,7 +20,14 @@
 import type { Ollama, Message, Tool } from "ollama";
 import * as skills from "./skills.js";
 import { runCommandOnce } from "./exec.js";
-import { RUN_COMMAND_TOOL, DELEGATE_TOOL, LOAD_SKILL_TOOL, CREATE_SKILL_TOOL, SHELL_TOOLS } from "./tools.js";
+import {
+  RUN_COMMAND_TOOL,
+  DELEGATE_TOOL,
+  DELEGATE_TASKS_TOOL,
+  LOAD_SKILL_TOOL,
+  CREATE_SKILL_TOOL,
+  SHELL_TOOLS,
+} from "./tools.js";
 import type { RunStats } from "./types.js";
 import * as ui from "./ui.js";
 import { pickSpecialistModel, type PoolEntry } from "./model-pool.js";
@@ -58,7 +65,7 @@ export const FINAL_ANSWER_NUDGE =
  */
 export function toolsFor(activeModel: string, smallModel: string): Tool[] {
   if (activeModel === smallModel) return SHELL_TOOLS;
-  const tools: Tool[] = [RUN_COMMAND_TOOL, DELEGATE_TOOL, CREATE_SKILL_TOOL];
+  const tools: Tool[] = [RUN_COMMAND_TOOL, DELEGATE_TOOL, DELEGATE_TASKS_TOOL, CREATE_SKILL_TOOL];
   if (skills.discover().size > 0) tools.push(LOAD_SKILL_TOOL); // nothing installed, nothing to load
   return tools;
 }
@@ -107,6 +114,26 @@ function createSkill(args: Record<string, any>): string {
     `Saved and verified: ${path} parses back and registers as '${skill.name}' ` +
     `(model ${skill.model}). It is available from the next ask run onward.`
   );
+}
+
+/**
+ * Dispatch N independent tasks to N sub-agents CONCURRENTLY (Promise.all,
+ * not one after another) and combine their reports. Each call reuses the
+ * exact same delegateTask function the single-task path uses — no new
+ * sub-agent machinery, just running several instances of the existing one
+ * at once. Real parallelism across different physical nodes serving the
+ * same model comes for free from the relay's own round-robin backend
+ * selection (verified directly against miniaicloud's source): concurrent
+ * requests for the same model name land on different registered backends,
+ * ask never needs to address a specific node itself.
+ */
+async function delegateTasksInParallel(deps: AgenticLoopDeps, tasks: string[]): Promise<string> {
+  if (tasks.length === 0) return "No tasks were given to delegate_tasks.";
+
+  ui.printDelegatingTasksHeader(tasks);
+  const reports = await Promise.all(tasks.map((task) => deps.delegateTask(deps.client, task)));
+
+  return tasks.map((task, i) => `Task ${i + 1}: ${task}\nResult: ${reports[i]}`).join("\n\n");
 }
 
 export type DelegateTaskFn = (client: Ollama, task: string) => Promise<string>;
@@ -319,6 +346,10 @@ export async function agenticLoop(
         if (tc.function.name === "delegate_task") {
           stats.delegations = (stats.delegations ?? 0) + 1;
           output = await deps.delegateTask(deps.client, args.task ?? "");
+        } else if (tc.function.name === "delegate_tasks") {
+          const tasks: string[] = Array.isArray(args.tasks) ? args.tasks.filter((t: unknown) => typeof t === "string") : [];
+          stats.delegations = (stats.delegations ?? 0) + tasks.length;
+          output = await delegateTasksInParallel(deps, tasks);
         } else if (tc.function.name === "load_skill") {
           stats.skillsLoaded = (stats.skillsLoaded ?? 0) + 1;
           output = loadSkill(args.name ?? "");

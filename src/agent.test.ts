@@ -266,7 +266,7 @@ test("toolsFor: the main model gets the full set, minus load_skill when no skill
   skills.setSkillsDir(tmp);
   try {
     const names = toolsFor(MAIN, SMALL).map((t) => t.function.name);
-    assert.deepEqual(names, ["run_command", "delegate_task", "create_skill"]);
+    assert.deepEqual(names, ["run_command", "delegate_task", "delegate_tasks", "create_skill"]);
   } finally {
     skills.setSkillsDir(realDir);
     rmSync(tmp, { recursive: true, force: true });
@@ -283,7 +283,7 @@ test("toolsFor: the main model gets load_skill added once at least one skill exi
     skills.resetCache();
 
     const names = toolsFor(MAIN, SMALL).map((t) => t.function.name);
-    assert.deepEqual(names, ["run_command", "delegate_task", "create_skill", "load_skill"]);
+    assert.deepEqual(names, ["run_command", "delegate_task", "delegate_tasks", "create_skill", "load_skill"]);
   } finally {
     skills.setSkillsDir(realDir);
     rmSync(tmp, { recursive: true, force: true });
@@ -298,7 +298,7 @@ test("toolsFor: a third (specialist) model that is neither main nor small also g
     const tools = toolsFor("some-specialist-model:8b", SMALL);
     assert.deepEqual(
       tools.map((t) => t.function.name),
-      ["run_command", "delegate_task", "create_skill"]
+      ["run_command", "delegate_task", "delegate_tasks", "create_skill"]
     );
   } finally {
     skills.setSkillsDir(realDir);
@@ -416,4 +416,159 @@ test("tier 3 via the exception path: turns is NOT reset (matches the existing sm
     HARD_MAX_TURNS - 1,
     "turns was not reset on this escalation path, so the specialist starts from turns=2, not turns=1 — one fewer call before the cap"
   );
+});
+
+// ---------- delegate_tasks: parallel fan-out ----------
+
+test("delegate_tasks: runs all tasks genuinely CONCURRENTLY, not sequentially — total wall-clock is ~1 delay, not N", async () => {
+  const DELAY_MS = 150;
+  const N = 4;
+  let inFlight = 0;
+  let maxInFlight = 0;
+
+  const client = {
+    chat: async (req: any) => {
+      if (req.tools === undefined) return finalResponse("done"); // finalAnswer/wrap-up path, unused here
+      return toolCallResponse();
+    },
+  } as unknown as Ollama;
+
+  const delegateTask = async (_c: Ollama, task: string): Promise<string> => {
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((r) => setTimeout(r, DELAY_MS));
+    inFlight -= 1;
+    return `report for: ${task}`;
+  };
+
+  let callIndex = 0;
+  const dispatchClient = {
+    chat: async (req: any) => {
+      callIndex += 1;
+      if (callIndex === 1) {
+        return {
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                function: {
+                  name: "delegate_tasks",
+                  arguments: { tasks: Array.from({ length: N }, (_, i) => `task ${i + 1}`) },
+                },
+              },
+            ],
+          } as Message,
+        };
+      }
+      return finalResponse("all done");
+    },
+  } as unknown as Ollama;
+
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  const stats: any = {};
+  const started = Date.now();
+  await agenticLoop(baseDeps(dispatchClient, { delegateTask }), messages, MAIN, stats);
+  const elapsedMs = Date.now() - started;
+
+  assert.equal(maxInFlight, N, "all N tasks must have been in flight at the same time — proves real concurrency, not sequential dispatch");
+  assert.ok(
+    elapsedMs < DELAY_MS * N,
+    `elapsed (${elapsedMs}ms) should be well under N sequential delays (${DELAY_MS * N}ms) if genuinely parallel`
+  );
+  assert.equal(stats.delegations, N, "each task counts as its own delegation");
+});
+
+test("delegate_tasks: combines each task's report, labeled by task number, in order", async () => {
+  let callIndex = 0;
+  const client = {
+    chat: async (req: any) => {
+      callIndex += 1;
+      if (callIndex === 1) {
+        return {
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [{ function: { name: "delegate_tasks", arguments: { tasks: ["count files", "check git branch"] } } }],
+          } as Message,
+        };
+      }
+      return finalResponse("summarized");
+    },
+  } as unknown as Ollama;
+
+  const delegateTask = async (_c: Ollama, task: string): Promise<string> =>
+    task === "count files" ? "42 files" : "on main";
+
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  await agenticLoop(baseDeps(client, { delegateTask }), messages, MAIN);
+
+  const toolMsg = messages.find((m) => m.role === "tool");
+  assert.match(toolMsg!.content, /Task 1: count files\nResult: 42 files/);
+  assert.match(toolMsg!.content, /Task 2: check git branch\nResult: on main/);
+});
+
+test("delegate_tasks: an empty tasks array degrades gracefully, no delegateTask calls at all", async () => {
+  let delegateCallCount = 0;
+  let callIndex = 0;
+  const client = {
+    chat: async (req: any) => {
+      callIndex += 1;
+      if (callIndex === 1) {
+        return {
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [{ function: { name: "delegate_tasks", arguments: { tasks: [] } } }],
+          } as Message,
+        };
+      }
+      return finalResponse("noted");
+    },
+  } as unknown as Ollama;
+
+  const delegateTask = async (): Promise<string> => {
+    delegateCallCount += 1;
+    return "should not happen";
+  };
+
+  const stats: any = {};
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  await agenticLoop(baseDeps(client, { delegateTask }), messages, MAIN, stats);
+
+  assert.equal(delegateCallCount, 0);
+  assert.equal(stats.delegations, 0);
+  const toolMsg = messages.find((m) => m.role === "tool");
+  assert.match(toolMsg!.content, /No tasks were given/);
+});
+
+test("delegate_tasks: non-string entries in the tasks array are filtered out rather than crashing", async () => {
+  let callIndex = 0;
+  const client = {
+    chat: async (req: any) => {
+      callIndex += 1;
+      if (callIndex === 1) {
+        return {
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              { function: { name: "delegate_tasks", arguments: { tasks: ["real task", 42, null, { not: "a string" }] } } },
+            ],
+          } as Message,
+        };
+      }
+      return finalResponse("done");
+    },
+  } as unknown as Ollama;
+
+  const delegateTask = async (_c: Ollama, task: string): Promise<string> => `handled: ${task}`;
+
+  const stats: any = {};
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  await agenticLoop(baseDeps(client, { delegateTask }), messages, MAIN, stats);
+
+  assert.equal(stats.delegations, 1, "only the one real string task counted");
+  const toolMsg = messages.find((m) => m.role === "tool");
+  assert.match(toolMsg!.content, /Task 1: real task\nResult: handled: real task/);
 });

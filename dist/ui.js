@@ -129,6 +129,18 @@ export function printCreateSkillSuccess(path, name, model) {
     console.log(chalk.dim(`     → re-parsed: registers as '${name}', model ${model}`));
     console.log();
 }
+/**
+ * Printed once before N sub-agents are dispatched concurrently, listing the
+ * full plan up front — their individual live progress lines can interleave
+ * once they're actually running in parallel (genuine concurrency, not
+ * staged/buffered), so this is what lets a reader tell which numbered task
+ * a later interleaved block belongs to.
+ */
+export function printDelegatingTasksHeader(tasks) {
+    console.log(chalk.bold.magenta(`  └─ delegating ${tasks.length} tasks in parallel:`));
+    tasks.forEach((t, i) => console.log(chalk.dim(`       ${i + 1}. ${t}`)));
+    console.log();
+}
 export function printSubagentLabel(model, task) {
     console.log(chalk.bold.magenta("  └─ ") + chalk.bold.magenta(model) + chalk.dim(`  ${task}`));
     console.log();

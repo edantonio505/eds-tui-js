@@ -197,6 +197,24 @@ delegation tool of its own and no view of the parent conversation, so each
 delegated task has to stand alone. It runs its own agentic loop (up to 5
 steps) and returns a text report as the parent's tool result.
 
+### Parallel fan-out (`delegate_tasks`)
+
+When it has several genuinely **independent** pieces of legwork — nothing
+that depends on another task's result — the main model can hand them all to
+`delegate_tasks` at once instead of calling `delegate_task` repeatedly.
+They run **at the same time as each other**, not one after another: real
+concurrency (`Promise.all`, not a queue), each with its own sub-agent, its
+own shell, and no visibility into the others. Their combined reports come
+back as one tool result, labeled by task number.
+
+This isn't just faster because the tasks overlap — it's faster because a
+network with more than one node serving the delegate model spreads
+concurrent requests across them for free. miniaicloud's relay round-robins
+across every backend registered for a given model name on each request; `ask`
+never has to know or care which physical node ends up doing the work.
+Measured live against a real multi-node network: 4 independent delegated
+tasks took **2.07x longer run one at a time than run concurrently**.
+
 ## Self-check
 
 `ask --test` exercises the whole arrangement against your live server and
