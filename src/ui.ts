@@ -148,6 +148,11 @@ export function printStatusLine(model: string, skillName?: string | null): void 
   console.log();
 }
 
+/** The interactive prompt string: bold cyan cwd, then a bold bright-white ❯. */
+export function buildPromptText(cwdShort: string): string {
+  return chalk.bold.cyan(` ${cwdShort}`) + chalk.bold.whiteBright(" ❯ ");
+}
+
 export function say(text: string): void {
   console.log(text);
 }
