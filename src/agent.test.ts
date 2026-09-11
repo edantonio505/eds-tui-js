@@ -1,0 +1,291 @@
+import { test, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Ollama, Message } from "ollama";
+import { agenticLoop, toolsFor, HARD_MAX_TURNS, SMALL_MAX_TURNS, type AgenticLoopDeps } from "./agent.js";
+import * as skills from "./skills.js";
+
+const MAIN = "main-model";
+const SMALL = "small-model";
+const CWD = tmpdir();
+
+function baseDeps(client: Ollama, overrides: Partial<AgenticLoopDeps> = {}): AgenticLoopDeps {
+  return {
+    client,
+    mainModel: MAIN,
+    smallModel: SMALL,
+    cwd: CWD,
+    delegateTask: async () => "delegated result",
+    saveHistory: () => {},
+    ...overrides,
+  };
+}
+
+function toolCallResponse(command = "echo tick") {
+  return {
+    message: {
+      role: "assistant",
+      content: "",
+      tool_calls: [{ function: { name: "run_command", arguments: { command } } }],
+    } as Message,
+  };
+}
+
+function finalResponse(content: string) {
+  return { message: { role: "assistant", content } as Message };
+}
+
+test("no tool calls: returns the content directly and saves history", async () => {
+  const savedHistories: Message[][] = [];
+  const client = { chat: async () => finalResponse("the answer") } as unknown as Ollama;
+  const deps = baseDeps(client, { saveHistory: (m) => savedHistories.push(m) });
+
+  const messages: Message[] = [{ role: "user", content: "hi" }];
+  const result = await agenticLoop(deps, messages, MAIN);
+
+  assert.equal(result, "the answer");
+  assert.equal(savedHistories.length, 1);
+  assert.equal(messages[messages.length - 1]?.content, "the answer");
+});
+
+test("a tool_calls response dispatches to run_command via runCommandOnce, using a real subprocess", async () => {
+  let callCount = 0;
+  const client = {
+    chat: async () => {
+      callCount += 1;
+      return callCount === 1 ? toolCallResponse("echo real-output") : finalResponse("done");
+    },
+  } as unknown as Ollama;
+
+  const stats: any = {};
+  const messages: Message[] = [{ role: "user", content: "run something" }];
+  await agenticLoop(baseDeps(client), messages, MAIN, stats);
+
+  assert.equal(stats.commands, 1);
+  const toolMsg = messages.find((m) => m.role === "tool");
+  assert.equal(toolMsg?.content, "real-output");
+});
+
+test("escalation via turn-budget: small model always returns tool_calls; main gets a FULL FRESH 14-turn budget after escalation (turns resets to 1)", async () => {
+  const calls: Array<{ model: string; hasTools: boolean }> = [];
+  const client = {
+    chat: async (req: any) => {
+      calls.push({ model: req.model, hasTools: req.tools !== undefined });
+      if (req.tools === undefined) return finalResponse("SALVAGED"); // the finalAnswer nudge call
+      return toolCallResponse(); // both models loop forever otherwise
+    },
+  } as unknown as Ollama;
+
+  const stats: any = {};
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  const result = await agenticLoop(baseDeps(client), messages, SMALL, stats);
+
+  const smallCalls = calls.filter((c) => c.model === SMALL && c.hasTools);
+  const mainCalls = calls.filter((c) => c.model === MAIN && c.hasTools);
+
+  assert.equal(smallCalls.length, SMALL_MAX_TURNS, "small model gets exactly its own SMALL_MAX_TURNS calls");
+  assert.equal(mainCalls.length, HARD_MAX_TURNS, "main model gets a full fresh HARD_MAX_TURNS budget, not a reduced one");
+  assert.equal(stats.escalated, true);
+  assert.equal(stats.capped, true);
+  assert.equal(result, "SALVAGED");
+});
+
+test("escalation via exception: small's chat() throws on its first call; turns is NOT reset, so main only gets HARD_MAX_TURNS-1 calls before the cap", async () => {
+  const calls: Array<{ model: string; hasTools: boolean }> = [];
+  let smallCallCount = 0;
+  const client = {
+    chat: async (req: any) => {
+      calls.push({ model: req.model, hasTools: req.tools !== undefined });
+      if (req.tools === undefined) return finalResponse("SALVAGED");
+      if (req.model === SMALL) {
+        smallCallCount += 1;
+        throw new Error("small model unreachable");
+      }
+      return toolCallResponse();
+    },
+  } as unknown as Ollama;
+
+  const stats: any = {};
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  await agenticLoop(baseDeps(client), messages, SMALL, stats);
+
+  assert.equal(smallCallCount, 1, "small is only ever attempted once — it escalates immediately on failure, no retry loop");
+  const mainCalls = calls.filter((c) => c.model === MAIN && c.hasTools);
+  assert.equal(
+    mainCalls.length,
+    HARD_MAX_TURNS - 1,
+    "turns was NOT reset on exception-triggered escalation (unlike the turn-budget-exceeded path), so main starts from turns=2, not turns=1"
+  );
+});
+
+test("hard cap still produces a real answer via finalAnswer, never silent failure", async () => {
+  const client = {
+    chat: async (req: any) => (req.tools === undefined ? finalResponse("conclusion from evidence") : toolCallResponse()),
+  } as unknown as Ollama;
+
+  const stats: any = {};
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  const result = await agenticLoop(baseDeps(client), messages, MAIN, stats);
+
+  assert.equal(stats.capped, true);
+  assert.equal(result, "conclusion from evidence");
+});
+
+test("hard cap with no salvageable answer (finalAnswer's own call also fails) returns null, not a throw", async () => {
+  const client = {
+    chat: async (req: any) => {
+      if (req.tools === undefined) throw new Error("even the salvage call failed");
+      return toolCallResponse();
+    },
+  } as unknown as Ollama;
+
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  const result = await agenticLoop(baseDeps(client), messages, MAIN);
+  assert.equal(result, null);
+});
+
+test("WRAP_UP_NUDGE is appended to the last tool message exactly 2 and 1 rounds before the cap, not earlier", async () => {
+  const client = {
+    chat: async (req: any) => (req.tools === undefined ? finalResponse("done") : toolCallResponse()),
+  } as unknown as Ollama;
+
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  await agenticLoop(baseDeps(client), messages, MAIN);
+
+  const nudged = messages.filter((m) => m.role === "tool" && m.content.includes("SYSTEM NOTE"));
+  // left<=2 fires on turns=13 (left=1) and turns=12 (left=2) — exactly 2 tool messages carry the nudge.
+  assert.equal(nudged.length, 2);
+});
+
+test("main model's own exception: salvages via finalAnswer when a tool message already exists", async () => {
+  let callIndex = 0;
+  const client = {
+    chat: async (req: any) => {
+      callIndex += 1;
+      if (req.tools === undefined) return finalResponse("salvaged after main failure");
+      if (callIndex === 1) return toolCallResponse(); // produces a tool message first
+      throw new Error("main model exploded");
+    },
+  } as unknown as Ollama;
+
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  const result = await agenticLoop(baseDeps(client), messages, MAIN);
+  assert.equal(result, "salvaged after main failure");
+});
+
+test("main model's own exception with NO prior tool message: re-throws instead of salvaging (nothing to salvage from)", async () => {
+  const client = {
+    chat: async () => {
+      throw new Error("main model exploded on the very first call");
+    },
+  } as unknown as Ollama;
+
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  await assert.rejects(() => agenticLoop(baseDeps(client), messages, MAIN), /exploded on the very first call/);
+});
+
+test("delegate_task/load_skill/create_skill dispatch to the right handler and increment their own stats counter", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "eds-tui-agent-test-"));
+  const realDir = skills.SKILLS_DIR;
+  skills.setSkillsDir(tmp);
+  try {
+    mkdirSync(join(tmp, "known-skill"), { recursive: true });
+    writeFileSync(join(tmp, "known-skill", "SKILL.md"), "---\ndescription: does a thing.\n---\n\nDo it.\n");
+    skills.resetCache();
+
+    let callIndex = 0;
+    const client = {
+      chat: async (req: any) => {
+        callIndex += 1;
+        if (callIndex === 1) {
+          return {
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [
+                { function: { name: "delegate_task", arguments: { task: "do a thing" } } },
+                { function: { name: "load_skill", arguments: { name: "known-skill" } } },
+                {
+                  function: {
+                    name: "create_skill",
+                    arguments: { name: "new-one", description: "a new one.", body: "steps" },
+                  },
+                },
+              ],
+            } as Message,
+          };
+        }
+        return finalResponse("all dispatched");
+      },
+    } as unknown as Ollama;
+
+    let delegatedTask = "";
+    const stats: any = {};
+    const messages: Message[] = [{ role: "user", content: "go" }];
+    await agenticLoop(
+      baseDeps(client, {
+        delegateTask: async (_c, task) => {
+          delegatedTask = task;
+          return "delegated ok";
+        },
+      }),
+      messages,
+      MAIN,
+      stats
+    );
+
+    assert.equal(stats.delegations, 1);
+    assert.equal(stats.skillsLoaded, 1);
+    assert.equal(stats.skillsCreated, 1);
+    assert.equal(delegatedTask, "do a thing");
+
+    const toolResults = messages.filter((m) => m.role === "tool").map((m) => m.content);
+    assert.ok(toolResults.some((c) => c === "delegated ok"));
+    assert.ok(toolResults.some((c) => c.includes("does a thing")));
+    assert.ok(toolResults.some((c) => c.includes("Saved and verified")));
+    assert.ok(skills.get("new-one"), "create_skill's write must have actually landed on disk");
+  } finally {
+    skills.setSkillsDir(realDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("toolsFor: the small model always gets shell-only tools, regardless of skills installed", () => {
+  const tools = toolsFor(SMALL, MAIN);
+  assert.deepEqual(
+    tools.map((t) => t.function.name),
+    ["run_command"]
+  );
+});
+
+test("toolsFor: the main model gets the full set, minus load_skill when no skills exist", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "eds-tui-agent-toolsfor-"));
+  const realDir = skills.SKILLS_DIR;
+  skills.setSkillsDir(tmp);
+  try {
+    const names = toolsFor(MAIN, MAIN).map((t) => t.function.name);
+    assert.deepEqual(names, ["run_command", "delegate_task", "create_skill"]);
+  } finally {
+    skills.setSkillsDir(realDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("toolsFor: the main model gets load_skill added once at least one skill exists", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "eds-tui-agent-toolsfor-2-"));
+  const realDir = skills.SKILLS_DIR;
+  skills.setSkillsDir(tmp);
+  try {
+    mkdirSync(join(tmp, "x"), { recursive: true });
+    writeFileSync(join(tmp, "x", "SKILL.md"), "---\ndescription: x.\n---\n\nx.\n");
+    skills.resetCache();
+
+    const names = toolsFor(MAIN, MAIN).map((t) => t.function.name);
+    assert.deepEqual(names, ["run_command", "delegate_task", "create_skill", "load_skill"]);
+  } finally {
+    skills.setSkillsDir(realDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
