@@ -38,6 +38,27 @@ const DELEGATION_PROBE =
   "Delegate two subtasks: first, count how many *.py files are in the current directory; " +
   "second, report the name of the current git branch. Then give me both answers.";
 const ESCALATION_PROBE = "Run 'pwd', then separately run 'whoami', then report both results.";
+// A real model confirmed present on the live interdata network (not a
+// fixture name that would just fail to resolve) — proves an actual
+// escalation to an actual model, not just that the mechanism fires.
+const SPECIALIST_FIXTURE_POOL = [
+  { name: "deepseek-r1:8b", goodFor: "deep multi-step reasoning, math, logic, number theory" },
+];
+// Deliberately NOT ESCALATION_PROBE (a trivial pwd/whoami task) — verified
+// live that the small model correctly (!) declines to escalate a trivial
+// task to a reasoning specialist even when hardMaxTurns is artificially
+// forced to 1, since the pick decision judges the TASK, not why the cap
+// was hit. Also verified live that an explicit "first run X, THEN solve
+// this step by step" framing confuses the small model's routing judgment
+// (it starts answering the embedded task instead of picking a model, or
+// judges NONE) — this probe instead poses ONE coherent problem that
+// naturally requires a real command (forcing hardMaxTurns:1 to actually
+// bite on round 2) and is genuinely reasoning-heavy, without any
+// meta-instruction language competing with the routing system prompt.
+const SPECIALIST_PROBE =
+  "How many .ts files are in the current directory? Once you know that count N, " +
+  "prove step by step whether N is a prime number, and if not, find all its prime " +
+  "factors with full mathematical reasoning.";
 
 // A skill nothing else on the machine could satisfy, so a match proves the
 // skill reached the model rather than the model already knowing the answer.
@@ -165,6 +186,17 @@ export async function selfCheck(): Promise<void> {
     const answer = await agenticLoop(baseDeps({ hardMaxTurns: 1 }), messages, mainModel, stats);
     const ok = Boolean(answer) && Boolean(stats.capped);
     return [ok, ok ? `capped at 1 round → ${(answer ?? "").length}-char answer` : "capped run returned no answer"];
+  }
+
+  async function specialistEscalationFires(): Promise<CheckResult> {
+    console.log();
+    const messages: Message[] = [
+      { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: 14, activeModel: mainModel, mainModel }) },
+      { role: "user", content: SPECIALIST_PROBE },
+    ];
+    const stats: any = {};
+    await agenticLoop(baseDeps({ hardMaxTurns: 1, modelPool: SPECIALIST_FIXTURE_POOL }), messages, mainModel, stats);
+    return [Boolean(stats.specialistModel), `hard cap 1 → escalated to ${stats.specialistModel ?? "(none)"}`];
   }
 
   async function repeatCommandIsCached(): Promise<CheckResult> {
@@ -298,6 +330,7 @@ export async function selfCheck(): Promise<void> {
   await check("delegation: main spawns small", delegationWorks);
   await check("escalation past turn cap", escalationFires);
   await check("turn cap still answers", capStillAnswers);
+  await check("tier 3: specialist escalation fires", specialistEscalationFires);
   await check("repeated command is cached", repeatCommandIsCached);
   await check("huge output is clipped", () => hugeOutputIsClipped());
   await check("bad small model falls back", badSmallModelFallsBack);

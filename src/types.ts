@@ -23,4 +23,6 @@ export interface RunStats {
   escalated: boolean;
   capped: boolean;
   model: string;
+  /** The tier-3 specialist model escalated to this run, if any (see model-pool.ts). Not part of the original Python stats dict — new for the specialist-router feature. */
+  specialistModel: string | null;
 }

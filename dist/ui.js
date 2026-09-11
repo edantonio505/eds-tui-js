@@ -91,6 +91,10 @@ export function printEscalatingOnFailure(fromModel, toModel, message) {
     console.log(chalk.dim.yellow(`  ↑ ${fromModel} failed (${message}), escalating to ${toModel}`));
     console.log();
 }
+export function printEscalatingToSpecialist(toModel) {
+    console.log(chalk.dim.yellow(`  ↑ escalating to specialist model ${toModel}`));
+    console.log();
+}
 export function printModelRequestFailed(model, message) {
     console.log(chalk.red(`  ${model} request failed (${message})`));
     console.log();

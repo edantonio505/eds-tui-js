@@ -18,6 +18,7 @@ import { resolveModel, pinFor } from "./resolve-model.js";
 import { buildSystemPrompt } from "./prompt-builder.js";
 import { agenticLoop } from "./agent.js";
 import { makeDelegateTask } from "./subagent.js";
+import { loadPool } from "./model-pool.js";
 import * as skills from "./skills.js";
 import * as ui from "./ui.js";
 import { promptLine } from "./input.js";
@@ -256,6 +257,7 @@ async function main(): Promise<void> {
       cwd: process.cwd(),
       delegateTask: makeDelegateTask(smallModel, process.cwd(), APP_DIR),
       saveHistory,
+      modelPool: loadPool(),
     },
     messages,
     active,

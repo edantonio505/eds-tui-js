@@ -23,6 +23,7 @@ import { runCommandOnce } from "./exec.js";
 import { RUN_COMMAND_TOOL, DELEGATE_TOOL, LOAD_SKILL_TOOL, CREATE_SKILL_TOOL, SHELL_TOOLS } from "./tools.js";
 import type { RunStats } from "./types.js";
 import * as ui from "./ui.js";
+import { pickSpecialistModel, type PoolEntry } from "./model-pool.js";
 
 export const SMALL_MAX_TURNS = 6; // tool-call rounds before escalating off the small model
 export const HARD_MAX_TURNS = 14; // absolute ceiling, prevents a runaway loop
@@ -40,12 +41,23 @@ export const FINAL_ANSWER_NUDGE =
   "could not confirm and what you would have checked next. Do not ask to run anything.";
 
 /**
- * The main model can delegate, write skills and load them; the small model
- * just runs commands. create_skill is never gated on the registry — it is
- * how the first skill gets written.
+ * The main model (or a tier-3 specialist standing in for it) can delegate,
+ * write skills and load them; the small model just runs commands.
+ * create_skill is never gated on the registry — it is how the first skill
+ * gets written.
+ *
+ * Checked against smallModel, not mainModel — originally this compared
+ * `activeModel !== mainModel`, which was correct back when exactly two
+ * models could ever be active. Once tier-3 specialist escalation exists, a
+ * third model can be active too, and it should get the SAME (full) tool
+ * access main does — it's standing in for main because it has MORE
+ * capability for this task, not less. Restricting by "is this the small
+ * model" instead of "is this NOT the main model" correctly grants full
+ * tools to main and to any specialist alike, and restricts only the one
+ * model that should actually be restricted.
  */
-export function toolsFor(activeModel: string, mainModel: string): Tool[] {
-  if (activeModel !== mainModel) return SHELL_TOOLS;
+export function toolsFor(activeModel: string, smallModel: string): Tool[] {
+  if (activeModel === smallModel) return SHELL_TOOLS;
   const tools: Tool[] = [RUN_COMMAND_TOOL, DELEGATE_TOOL, CREATE_SKILL_TOOL];
   if (skills.discover().size > 0) tools.push(LOAD_SKILL_TOOL); // nothing installed, nothing to load
   return tools;
@@ -120,6 +132,15 @@ export interface AgenticLoopDeps {
    */
   smallMaxTurns?: number;
   hardMaxTurns?: number;
+  /**
+   * Tier-3 specialist models: mainly use mainModel/smallModel as always,
+   * but when the main model genuinely exhausts its turn budget without
+   * concluding, try escalating once more to whichever pool entry best fits
+   * the original request before falling back to finalAnswer on the same
+   * model that just struggled. Undefined/empty pool = tier 3 never fires,
+   * behavior is identical to before this existed.
+   */
+  modelPool?: PoolEntry[];
 }
 
 /**
@@ -174,6 +195,7 @@ export async function agenticLoop(
     escalated: false,
     capped: false,
     model: initialActiveModel,
+    specialistModel: null,
   });
 
   // Output of every command run this turn-loop, so an identical re-run can
@@ -186,6 +208,35 @@ export async function agenticLoop(
   let activeModel = initialActiveModel;
   let turns = 0;
   let total = 0;
+  let usedSpecialist = false;
+
+  /**
+   * Tier 3: mainly use main/small as always, but when the main model
+   * genuinely can't finish, try escalating once more to whichever pool
+   * entry best fits the ORIGINAL request (not the growing tool-call
+   * transcript) before falling back to a same-model salvage answer.
+   * `resetTurns` mirrors the existing tier1->tier2 asymmetry: a
+   * turn-budget-exhaustion escalation gets a full fresh budget (matches
+   * the small->main count-exhaustion path); an exception-triggered
+   * escalation does not (matches the small->main exception path) — see
+   * the module-level comment for why that asymmetry exists at all.
+   */
+  async function tryEscalateToSpecialist(resetTurns: boolean): Promise<boolean> {
+    if (activeModel !== deps.mainModel || usedSpecialist) return false;
+    const pool = deps.modelPool ?? [];
+    if (pool.length === 0) return false;
+
+    const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
+    const specialist = await pickSpecialistModel(deps.client, lastUserMessage?.content ?? "", pool, deps.smallModel);
+    if (!specialist || specialist === deps.mainModel) return false;
+
+    ui.printEscalatingToSpecialist(specialist);
+    activeModel = specialist;
+    usedSpecialist = true;
+    stats.specialistModel = specialist;
+    if (resetTurns) turns = 1;
+    return true;
+  }
 
   for (;;) {
     turns += 1;
@@ -193,9 +244,20 @@ export async function agenticLoop(
     stats.turns = total;
 
     if (turns > hardMaxTurns) {
+      // The ceiling itself was hit — a real, meaningful event regardless
+      // of what happens next, so this is set unconditionally (not only in
+      // the salvage-failure branch below). A caller can still tell
+      // "capped but successfully escalated" apart from "capped and
+      // salvaged on the same model" via stats.specialistModel.
       stats.capped = true;
-      ui.printBudgetSpent();
-      return finalAnswer(deps, messages, activeModel);
+      if (!(await tryEscalateToSpecialist(true))) {
+        ui.printBudgetSpent();
+        return finalAnswer(deps, messages, activeModel);
+      }
+      // Escalated — fall through to run the rest of THIS iteration against
+      // the new specialist model (turns is already reset to 1 above; no
+      // extra increment happens since we don't `continue` back to the loop
+      // top).
     }
 
     if (activeModel === deps.smallModel && turns > smallMaxTurns) {
@@ -214,7 +276,7 @@ export async function agenticLoop(
         deps.client.chat({
           model: activeModel,
           messages,
-          tools: toolsFor(activeModel, deps.mainModel),
+          tools: toolsFor(activeModel, deps.smallModel),
         })
       );
     } catch (e) {
@@ -228,11 +290,17 @@ export async function agenticLoop(
         // with different reset behavior; turns keeps counting.
         continue;
       }
-      // The main model has nowhere to escalate to, but a request that fails
-      // mid-run used to raise and discard a transcript full of gathered
-      // evidence. Try to answer from it first; only if there is nothing to
+      // A request that fails mid-run used to raise and discard a
+      // transcript full of gathered evidence. Try a tier-3 specialist
+      // first (only fires when activeModel is still main and none has
+      // been used yet — a no-op once we're already on a specialist, or
+      // once one has already been tried this run); failing that, try to
+      // answer from the transcript so far; only if there is nothing to
       // answer from does the error reach the caller.
-      ui.printModelRequestFailed(deps.mainModel, message);
+      ui.printModelRequestFailed(activeModel, message);
+      if (await tryEscalateToSpecialist(false)) {
+        continue;
+      }
       if (messages.some((m) => m.role === "tool")) {
         stats.capped = true;
         return finalAnswer(deps, messages, activeModel);

@@ -253,7 +253,7 @@ test("delegate_task/load_skill/create_skill dispatch to the right handler and in
 });
 
 test("toolsFor: the small model always gets shell-only tools, regardless of skills installed", () => {
-  const tools = toolsFor(SMALL, MAIN);
+  const tools = toolsFor(SMALL, SMALL);
   assert.deepEqual(
     tools.map((t) => t.function.name),
     ["run_command"]
@@ -265,7 +265,7 @@ test("toolsFor: the main model gets the full set, minus load_skill when no skill
   const realDir = skills.SKILLS_DIR;
   skills.setSkillsDir(tmp);
   try {
-    const names = toolsFor(MAIN, MAIN).map((t) => t.function.name);
+    const names = toolsFor(MAIN, SMALL).map((t) => t.function.name);
     assert.deepEqual(names, ["run_command", "delegate_task", "create_skill"]);
   } finally {
     skills.setSkillsDir(realDir);
@@ -282,10 +282,138 @@ test("toolsFor: the main model gets load_skill added once at least one skill exi
     writeFileSync(join(tmp, "x", "SKILL.md"), "---\ndescription: x.\n---\n\nx.\n");
     skills.resetCache();
 
-    const names = toolsFor(MAIN, MAIN).map((t) => t.function.name);
+    const names = toolsFor(MAIN, SMALL).map((t) => t.function.name);
     assert.deepEqual(names, ["run_command", "delegate_task", "create_skill", "load_skill"]);
   } finally {
     skills.setSkillsDir(realDir);
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("toolsFor: a third (specialist) model that is neither main nor small also gets the full set", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "eds-tui-agent-toolsfor-3-"));
+  const realDir = skills.SKILLS_DIR;
+  skills.setSkillsDir(tmp);
+  try {
+    const tools = toolsFor("some-specialist-model:8b", SMALL);
+    assert.deepEqual(
+      tools.map((t) => t.function.name),
+      ["run_command", "delegate_task", "create_skill"]
+    );
+  } finally {
+    skills.setSkillsDir(realDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------- Tier 3: specialist-model escalation ----------
+// Mock discriminator for these tests: a real round (main or specialist)
+// always passes `tools`; the pick-specialist call (model-pool.ts) omits
+// `tools` but sets `think`; the finalAnswer nudge call omits both. This
+// lets one mock client distinguish all three without any other signal.
+const SPECIALIST = "specialist-model";
+const POOL = [{ name: SPECIALIST, goodFor: "deep reasoning" }];
+
+test("tier 3: main exhausting its turn budget escalates to the pool-picked specialist, with a full fresh budget and full tools", async () => {
+  const calls: Array<{ model: string; tools: boolean; kind: string }> = [];
+  const client = {
+    chat: async (req: any) => {
+      const kind = req.tools !== undefined ? "round" : req.think !== undefined ? "pick" : "final";
+      calls.push({ model: req.model, tools: req.tools !== undefined, kind });
+      if (kind === "pick") return finalResponse(SPECIALIST);
+      if (kind === "round" && req.model === SPECIALIST) return finalResponse("specialist's answer");
+      return toolCallResponse(); // main just keeps calling tools forever
+    },
+  } as unknown as Ollama;
+
+  const stats: any = {};
+  const messages: Message[] = [{ role: "user", content: "a very hard task" }];
+  const result = await agenticLoop(baseDeps(client, { modelPool: POOL }), messages, MAIN, stats);
+
+  const mainRounds = calls.filter((c) => c.kind === "round" && c.model === MAIN);
+  const specialistRounds = calls.filter((c) => c.kind === "round" && c.model === SPECIALIST);
+  const pickCalls = calls.filter((c) => c.kind === "pick");
+
+  assert.equal(mainRounds.length, HARD_MAX_TURNS, "main gets its full normal budget before tier 3 is even considered");
+  assert.equal(pickCalls.length, 1);
+  assert.equal(specialistRounds.length, 1, "the specialist got a fresh budget and concluded on its first real call");
+  assert.equal(stats.specialistModel, SPECIALIST);
+  assert.equal(stats.capped, true);
+  assert.equal(result, "specialist's answer");
+
+  // The specialist must get the SAME full tool access main does, not the
+  // small model's shell-only set — it's standing in because it has MORE
+  // capability for this task, not less.
+  const specialistCallRaw = calls.find((c) => c.kind === "round" && c.model === SPECIALIST);
+  assert.ok(specialistCallRaw?.tools);
+});
+
+test("tier 3: no pool configured — falls back to the existing same-model salvage behavior, completely unchanged", async () => {
+  const calls: string[] = [];
+  const client = {
+    chat: async (req: any) => {
+      calls.push(req.model);
+      if (req.tools === undefined) return finalResponse("salvaged from main itself");
+      return toolCallResponse();
+    },
+  } as unknown as Ollama;
+
+  const stats: any = {};
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  const result = await agenticLoop(baseDeps(client, { modelPool: [] }), messages, MAIN, stats);
+
+  assert.equal(stats.specialistModel, null);
+  assert.equal(result, "salvaged from main itself");
+  assert.ok(calls.every((m) => m === MAIN), "never called anything but main — no pool means tier 3 never fires");
+});
+
+test("tier 3: escalates at most once — if the specialist ALSO exhausts its budget, falls back to salvaging on the specialist itself, not a second escalation", async () => {
+  const calls: Array<{ model: string; kind: string }> = [];
+  const client = {
+    chat: async (req: any) => {
+      const kind = req.tools !== undefined ? "round" : req.think !== undefined ? "pick" : "final";
+      calls.push({ model: req.model, kind });
+      if (kind === "pick") return finalResponse(SPECIALIST);
+      if (kind === "final") return finalResponse("salvaged from the specialist");
+      return toolCallResponse(); // both main and the specialist loop forever
+    },
+  } as unknown as Ollama;
+
+  const stats: any = {};
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  const result = await agenticLoop(baseDeps(client, { modelPool: POOL }), messages, MAIN, stats);
+
+  assert.equal(calls.filter((c) => c.kind === "pick").length, 1, "the pool is only ever consulted once per run");
+  assert.equal(stats.specialistModel, SPECIALIST);
+  assert.equal(result, "salvaged from the specialist");
+});
+
+test("tier 3 via the exception path: turns is NOT reset (matches the existing small→main exception asymmetry), and the specialist only gets hardMaxTurns-1 calls", async () => {
+  const calls: Array<{ model: string; kind: string }> = [];
+  let mainAttempts = 0;
+  const client = {
+    chat: async (req: any) => {
+      const kind = req.tools !== undefined ? "round" : req.think !== undefined ? "pick" : "final";
+      calls.push({ model: req.model, kind });
+      if (kind === "pick") return finalResponse(SPECIALIST);
+      if (kind === "final") return finalResponse("salvaged");
+      if (kind === "round" && req.model === MAIN) {
+        mainAttempts += 1;
+        throw new Error("main model unreachable");
+      }
+      return toolCallResponse(); // specialist loops forever once escalated to
+    },
+  } as unknown as Ollama;
+
+  const stats: any = {};
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  await agenticLoop(baseDeps(client, { modelPool: POOL }), messages, MAIN, stats);
+
+  assert.equal(mainAttempts, 1, "main is only ever attempted once before escalating on its own exception");
+  const specialistRounds = calls.filter((c) => c.kind === "round" && c.model === SPECIALIST);
+  assert.equal(
+    specialistRounds.length,
+    HARD_MAX_TURNS - 1,
+    "turns was not reset on this escalation path, so the specialist starts from turns=2, not turns=1 — one fewer call before the cap"
+  );
 });
