@@ -25,6 +25,7 @@
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
     "ollama": "^0.6.3",
+    "ora": "^9.4.1",
     "undici": "^8.10.2"
   },
   "devDependencies": {

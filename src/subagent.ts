@@ -19,15 +19,10 @@ import type { Ollama, Message } from "ollama";
 import { runCommand } from "./exec.js";
 import { SHELL_TOOLS } from "./tools.js";
 import { FINAL_ANSWER_NUDGE, type DelegateTaskFn } from "./agent.js";
+import * as ui from "./ui.js";
 
 export const SUBAGENT_MAX_TURNS = 5;
 const SUB_INDENT = "     ";
-
-// Plain stdout for now — Phase 7's ui.ts will replace this; see exec.ts's
-// identical note for why this split is deliberate.
-function say(text: string): void {
-  console.log(text);
-}
 
 export function buildSubagentPrompt(cwd: string, appDir: string): string {
   return (
@@ -53,8 +48,7 @@ export function buildSubagentPrompt(cwd: string, appDir: string): string {
  */
 export function makeDelegateTask(smallModel: string, cwd: string, appDir: string): DelegateTaskFn {
   return async (client: Ollama, task: string): Promise<string> => {
-    say(`  └─ ${smallModel}  ${task}`);
-    say("");
+    ui.printSubagentLabel(smallModel, task);
 
     const messages: Message[] = [
       { role: "system", content: buildSubagentPrompt(cwd, appDir) },
@@ -66,11 +60,12 @@ export function makeDelegateTask(smallModel: string, cwd: string, appDir: string
     for (let i = 0; i < SUBAGENT_MAX_TURNS; i++) {
       let response;
       try {
-        response = await client.chat({ model: smallModel, messages, tools: SHELL_TOOLS });
+        response = await ui.withSpinner(`${SUB_INDENT}${smallModel} working...`, () =>
+          client.chat({ model: smallModel, messages, tools: SHELL_TOOLS })
+        );
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        say(`${SUB_INDENT}delegation failed: ${message}`);
-        say("");
+        ui.printSubagentFailure(message);
         return `Delegation failed: ${message}. Handle this subtask yourself.`;
       }
 
@@ -97,8 +92,7 @@ export function makeDelegateTask(smallModel: string, cwd: string, appDir: string
         const rendered = [`${SUB_INDENT}→ ${lines[0]}`, ...lines.slice(1).map((l) => `${SUB_INDENT}  ${l}`)].join(
           "\n"
         );
-        say(rendered);
-        say("");
+        ui.printSubagentResult(rendered);
         return result;
       }
     }
@@ -107,10 +101,12 @@ export function makeDelegateTask(smallModel: string, cwd: string, appDir: string
     // and making it redo the work, ask for a conclusion with tools removed.
     let result = "";
     try {
-      const response = await client.chat({
-        model: smallModel,
-        messages: [...messages, { role: "user", content: FINAL_ANSWER_NUDGE }],
-      });
+      const response = await ui.withSpinner(`${SUB_INDENT}${smallModel} wrapping up...`, () =>
+        client.chat({
+          model: smallModel,
+          messages: [...messages, { role: "user", content: FINAL_ANSWER_NUDGE }],
+        })
+      );
       result = (response.message.content ?? "").trim();
     } catch {
       result = "";
@@ -123,8 +119,7 @@ export function makeDelegateTask(smallModel: string, cwd: string, appDir: string
       );
     }
 
-    say(`${SUB_INDENT}→ ${result.split("\n")[0]}`);
-    say("");
+    ui.printSubagentResult(`${SUB_INDENT}→ ${result.split("\n")[0]}`);
     return (
       `(subtask hit its ${SUBAGENT_MAX_TURNS}-step limit; this is its best ` +
       `conclusion from what it saw)\n${result}`

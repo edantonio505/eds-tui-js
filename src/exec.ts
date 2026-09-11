@@ -19,36 +19,15 @@
 
 import { exec as execCallback } from "node:child_process";
 import { clipOutput } from "./clip.js";
+import {
+  printCommand as printCommandLabel,
+  printCommandOutput as printOutput,
+  printCommandError as printError,
+  printCachedNote,
+} from "./ui.js";
 
 export const COMMAND_TIMEOUT_MS = 30_000;
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
-
-function indentLines(text: string, indent: string): string {
-  return text
-    .split("\n")
-    .map((line) => `${indent}${line}`)
-    .join("\n");
-}
-
-// Plain stdout for now — Phase 7's ui.ts will replace these with styled
-// (chalk) equivalents; kept as free functions here so that swap is a
-// one-file change, not a rewrite of the calling logic below.
-function printCommandLabel(command: string, indent: string): void {
-  console.log(`${indent}$ ${command}`);
-}
-function printOutput(output: string, indent: string): void {
-  console.log(indentLines(output, indent));
-  console.log();
-}
-function printError(message: string, indent: string): void {
-  console.log(`${indent}Error: ${message}`);
-  console.log();
-}
-function printCachedNote(command: string): void {
-  console.log(`  $ ${command}`);
-  console.log("  (already run this session — reusing the output)");
-  console.log();
-}
 
 export function runCommand(
   command: string,

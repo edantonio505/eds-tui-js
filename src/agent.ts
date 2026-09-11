@@ -22,6 +22,7 @@ import * as skills from "./skills.js";
 import { runCommandOnce } from "./exec.js";
 import { RUN_COMMAND_TOOL, DELEGATE_TOOL, LOAD_SKILL_TOOL, CREATE_SKILL_TOOL, SHELL_TOOLS } from "./tools.js";
 import type { RunStats } from "./types.js";
+import * as ui from "./ui.js";
 
 export const SMALL_MAX_TURNS = 6; // tool-call rounds before escalating off the small model
 export const HARD_MAX_TURNS = 14; // absolute ceiling, prevents a runaway loop
@@ -50,19 +51,9 @@ export function toolsFor(activeModel: string, mainModel: string): Tool[] {
   return tools;
 }
 
-// Plain stdout for now — Phase 7's ui.ts will replace these; see exec.ts's
-// identical note for why this split is deliberate.
-function say(text: string): void {
-  console.log(text);
-}
-function renderAnswer(content: string): void {
-  console.log("\n" + (content ?? "") + "\n");
-}
-
 function loadSkill(name: string): string {
   const skill = skills.get(name);
-  say(`  ◆ skill ${name || "(unnamed)"}`);
-  say("");
+  ui.printSkillLabel(name, Boolean(skill));
 
   if (skill) return skills.render(skill);
 
@@ -80,7 +71,7 @@ function asBool(value: unknown): boolean {
 
 function createSkill(args: Record<string, any>): string {
   const name = args.name ?? "";
-  say(`  ◆ create skill ${name || "(unnamed)"}`);
+  ui.printCreateSkillLabel(name);
 
   let skill;
   try {
@@ -93,15 +84,12 @@ function createSkill(args: Record<string, any>): string {
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    say(`     ✗ ${message}`);
-    say("");
+    ui.printCreateSkillError(message);
     return `create_skill failed: ${message}`;
   }
 
   const path = `${skill.dir}/SKILL.md`;
-  say(`     → wrote ${path}`);
-  say(`     → re-parsed: registers as '${skill.name}', model ${skill.model}`);
-  say("");
+  ui.printCreateSkillSuccess(path, skill.name, skill.model);
 
   return (
     `Saved and verified: ${path} parses back and registers as '${skill.name}' ` +
@@ -133,27 +121,27 @@ export async function finalAnswer(
 ): Promise<string | null> {
   let response;
   try {
-    response = await deps.client.chat({
-      model: activeModel,
-      messages: [...messages, { role: "user", content: FINAL_ANSWER_NUDGE }],
-    });
+    response = await ui.withSpinner("Wrapping up...", () =>
+      deps.client.chat({
+        model: activeModel,
+        messages: [...messages, { role: "user", content: FINAL_ANSWER_NUDGE }],
+      })
+    );
   } catch (e) {
-    say(`  Could not produce a final answer: ${e instanceof Error ? e.message : e}`);
-    say("");
+    ui.printCouldNotProduceFinalAnswer(e instanceof Error ? e.message : String(e));
     deps.saveHistory(messages);
     return null;
   }
 
   const content = (response.message.content ?? "").trim();
   if (!content) {
-    say("  Stopped: too many tool-call rounds, and no answer could be salvaged.");
-    say("");
+    ui.printStoppedNoAnswer();
     deps.saveHistory(messages);
     return null;
   }
 
   messages.push(response.message);
-  renderAnswer(content);
+  await ui.renderAnswer(content);
   deps.saveHistory(messages);
   return content;
 }
@@ -190,14 +178,12 @@ export async function agenticLoop(
 
     if (turns > HARD_MAX_TURNS) {
       stats.capped = true;
-      say("  Tool-call budget spent — answering from what was found.");
-      say("");
+      ui.printBudgetSpent();
       return finalAnswer(deps, messages, activeModel);
     }
 
     if (activeModel === deps.smallModel && turns > SMALL_MAX_TURNS) {
-      say(`  ↑ escalating to ${deps.mainModel}`);
-      say("");
+      ui.printEscalating(deps.mainModel);
       activeModel = deps.mainModel;
       stats.escalated = true;
       // The main model inherits the transcript, not the spent budget.
@@ -208,15 +194,17 @@ export async function agenticLoop(
 
     let response;
     try {
-      response = await deps.client.chat({
-        model: activeModel,
-        messages,
-        tools: toolsFor(activeModel, deps.mainModel),
-      });
+      response = await ui.withSpinner("Thinking...", () =>
+        deps.client.chat({
+          model: activeModel,
+          messages,
+          tools: toolsFor(activeModel, deps.mainModel),
+        })
+      );
     } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
       if (activeModel === deps.smallModel) {
-        say(`  ↑ ${deps.smallModel} failed (${e instanceof Error ? e.message : e}), escalating to ${deps.mainModel}`);
-        say("");
+        ui.printEscalatingOnFailure(deps.smallModel, deps.mainModel, message);
         activeModel = deps.mainModel;
         stats.escalated = true;
         // Deliberately NOT reset here, unlike the turn-budget escalation
@@ -228,8 +216,7 @@ export async function agenticLoop(
       // mid-run used to raise and discard a transcript full of gathered
       // evidence. Try to answer from it first; only if there is nothing to
       // answer from does the error reach the caller.
-      say(`  ${deps.mainModel} request failed (${e instanceof Error ? e.message : e})`);
-      say("");
+      ui.printModelRequestFailed(deps.mainModel, message);
       if (messages.some((m) => m.role === "tool")) {
         stats.capped = true;
         return finalAnswer(deps, messages, activeModel);
@@ -241,8 +228,7 @@ export async function agenticLoop(
     messages.push(msg);
 
     if (msg.tool_calls && msg.tool_calls.length > 0) {
-      say("  Running tools");
-      say("");
+      ui.printRunningTools();
       for (const tc of msg.tool_calls) {
         const args = tc.function.arguments ?? {};
         let output: string;
@@ -271,7 +257,7 @@ export async function agenticLoop(
         lastMessage.content += "\n\n" + WRAP_UP_NUDGE(left);
       }
     } else {
-      renderAnswer(msg.content);
+      await ui.renderAnswer(msg.content);
       deps.saveHistory(messages);
       return msg.content;
     }
