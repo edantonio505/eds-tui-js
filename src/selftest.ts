@@ -25,8 +25,9 @@ import { makeClient, DEFAULT_MAIN_MODEL, DEFAULT_SMALL_MODEL } from "./client.js
 import { triage } from "./triage.js";
 import { resolveModel, type TriageFn } from "./resolve-model.js";
 import { buildSystemPrompt } from "./prompt-builder.js";
-import { agenticLoop, type AgenticLoopDeps } from "./agent.js";
+import { agenticLoop, HARD_MAX_TURNS, type AgenticLoopDeps } from "./agent.js";
 import { makeDelegateTask } from "./subagent.js";
+import { makeConsultSpecialist } from "./consult.js";
 import { clipOutput, MAX_OUTPUT_CHARS } from "./clip.js";
 import { runCommandOnce } from "./exec.js";
 import * as skills from "./skills.js";
@@ -59,6 +60,24 @@ const SPECIALIST_PROBE =
   "How many .ts files are in the current directory? Once you know that count N, " +
   "prove step by step whether N is a prime number, and if not, find all its prime " +
   "factors with full mathematical reasoning.";
+
+// consult_specialist (a proactive, per-call hand-off that keeps control) is
+// deliberately probed with the SAME fixture pool/model as tier-3's
+// SPECIALIST_FIXTURE_POOL/deepseek-r1:8b, but hardMaxTurns is left at its
+// real default here (NOT forced to 1) — the point is proving the main
+// model reaches for the tool BY CHOICE for one sub-piece, not that it was
+// forced into it by budget exhaustion. The probe explicitly frames a trivial
+// part to do directly and a much harder part to get a second opinion on, so
+// the choice to consult is well-motivated rather than relying on the model
+// to invent that judgement call unprompted.
+const CONSULT_FIXTURE_POOL = [
+  { name: "deepseek-r1:8b", goodFor: "extremely hard step-by-step mathematical proofs and number theory" },
+];
+const CONSULT_PROBE =
+  "First run 'pwd' yourself — that part is trivial. Then, for the much harder part, get a " +
+  "second opinion from a specialist on a rigorous step-by-step proof of whether 8191 is a " +
+  "prime number. Once you have that, report both the working directory and the primality " +
+  "conclusion in your own final answer.";
 
 // A skill nothing else on the machine could satisfy, so a match proves the
 // skill reached the model rather than the model already knowing the answer.
@@ -117,6 +136,7 @@ export async function selfCheck(): Promise<void> {
       smallModel,
       cwd: process.cwd(),
       delegateTask: makeDelegateTask(smallModel, process.cwd(), process.cwd()),
+      consultSpecialist: makeConsultSpecialist([], smallModel, process.cwd(), process.cwd()),
       saveHistory: () => {},
       ...overrides,
     };
@@ -156,7 +176,7 @@ export async function selfCheck(): Promise<void> {
   async function delegationWorks(): Promise<CheckResult> {
     console.log();
     const messages: Message[] = [
-      { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: 14, activeModel: mainModel, mainModel }) },
+      { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: HARD_MAX_TURNS, activeModel: mainModel, mainModel }) },
       { role: "user", content: DELEGATION_PROBE },
     ];
     const stats: any = {};
@@ -168,7 +188,7 @@ export async function selfCheck(): Promise<void> {
   async function escalationFires(): Promise<CheckResult> {
     console.log();
     const messages: Message[] = [
-      { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: 14, activeModel: smallModel, mainModel }) },
+      { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: HARD_MAX_TURNS, activeModel: smallModel, mainModel }) },
       { role: "user", content: ESCALATION_PROBE },
     ];
     const stats: any = {};
@@ -179,7 +199,7 @@ export async function selfCheck(): Promise<void> {
   async function capStillAnswers(): Promise<CheckResult> {
     console.log();
     const messages: Message[] = [
-      { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: 14, activeModel: mainModel, mainModel }) },
+      { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: HARD_MAX_TURNS, activeModel: mainModel, mainModel }) },
       { role: "user", content: "List the files in the current directory and tell me what you see." },
     ];
     const stats: any = {};
@@ -191,12 +211,38 @@ export async function selfCheck(): Promise<void> {
   async function specialistEscalationFires(): Promise<CheckResult> {
     console.log();
     const messages: Message[] = [
-      { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: 14, activeModel: mainModel, mainModel }) },
+      { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: HARD_MAX_TURNS, activeModel: mainModel, mainModel }) },
       { role: "user", content: SPECIALIST_PROBE },
     ];
     const stats: any = {};
     await agenticLoop(baseDeps({ hardMaxTurns: 1, modelPool: SPECIALIST_FIXTURE_POOL }), messages, mainModel, stats);
     return [Boolean(stats.specialistModel), `hard cap 1 → escalated to ${stats.specialistModel ?? "(none)"}`];
+  }
+
+  async function consultSpecialistWorks(): Promise<CheckResult> {
+    console.log();
+    const messages: Message[] = [
+      { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: HARD_MAX_TURNS, activeModel: mainModel, mainModel }) },
+      { role: "user", content: CONSULT_PROBE },
+    ];
+    const stats: any = {};
+    await agenticLoop(
+      baseDeps({
+        modelPool: CONSULT_FIXTURE_POOL,
+        consultSpecialist: makeConsultSpecialist(CONSULT_FIXTURE_POOL, smallModel, process.cwd(), process.cwd()),
+      }),
+      messages,
+      mainModel,
+      stats
+    );
+    // Both must hold: the tool was actually reached for, AND control
+    // returned to main afterward — the second is the actual proof this is
+    // NOT a full hand-off, unlike tier-3 escalation.
+    const ok = (stats.consultations ?? 0) >= 1 && stats.model === mainModel;
+    return [
+      ok,
+      `consultations=${stats.consultations ?? 0}, ended on ${stats.model} (main=${mainModel})`,
+    ];
   }
 
   async function repeatCommandIsCached(): Promise<CheckResult> {
@@ -255,7 +301,7 @@ export async function selfCheck(): Promise<void> {
     return withFixtureSkills(async () => {
       console.log();
       const messages: Message[] = [
-        { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: 14, activeModel: mainModel, mainModel, otherSkillsIndex: skills.indexLines() }) },
+        { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: HARD_MAX_TURNS, activeModel: mainModel, mainModel, otherSkillsIndex: skills.indexLines() }) },
         { role: "user", content: "Load the selfcheck-widget skill, follow it, and report the widget subsystem status." },
       ];
       const stats: any = {};
@@ -269,7 +315,7 @@ export async function selfCheck(): Promise<void> {
     return withFixtureSkills(async () => {
       console.log();
       const messages: Message[] = [
-        { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: 14, activeModel: mainModel, mainModel, otherSkillsIndex: skills.indexLines() }) },
+        { role: "system", content: buildSystemPrompt({ cwd: process.cwd(), appDir: process.cwd(), hardMaxTurns: HARD_MAX_TURNS, activeModel: mainModel, mainModel, otherSkillsIndex: skills.indexLines() }) },
         {
           role: "user",
           content:
@@ -331,6 +377,7 @@ export async function selfCheck(): Promise<void> {
   await check("escalation past turn cap", escalationFires);
   await check("turn cap still answers", capStillAnswers);
   await check("tier 3: specialist escalation fires", specialistEscalationFires);
+  await check("consult_specialist: fires by choice, control returns to main", consultSpecialistWorks);
   await check("repeated command is cached", repeatCommandIsCached);
   await check("huge output is clipped", () => hugeOutputIsClipped());
   await check("bad small model falls back", badSmallModelFallsBack);

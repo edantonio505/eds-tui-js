@@ -26,14 +26,16 @@ import {
   DELEGATE_TASKS_TOOL,
   LOAD_SKILL_TOOL,
   CREATE_SKILL_TOOL,
+  CONSULT_SPECIALIST_TOOL,
   SHELL_TOOLS,
 } from "./tools.js";
+import { maybeCompact } from "./compaction.js";
 import type { RunStats } from "./types.js";
 import * as ui from "./ui.js";
 import { pickSpecialistModel, type PoolEntry } from "./model-pool.js";
 
 export const SMALL_MAX_TURNS = 6; // tool-call rounds before escalating off the small model
-export const HARD_MAX_TURNS = 14; // absolute ceiling, prevents a runaway loop
+export const HARD_MAX_TURNS = 40; // absolute ceiling, prevents a runaway loop
 
 const WRAP_UP_NUDGE = (left: number): string =>
   `SYSTEM NOTE: you have ${left} tool-call round(s) left before you are cut off. ` +
@@ -63,9 +65,12 @@ export const FINAL_ANSWER_NUDGE =
  * tools to main and to any specialist alike, and restricts only the one
  * model that should actually be restricted.
  */
-export function toolsFor(activeModel: string, smallModel: string): Tool[] {
+export function toolsFor(activeModel: string, smallModel: string, hasSpecialistPool: boolean): Tool[] {
   if (activeModel === smallModel) return SHELL_TOOLS;
   const tools: Tool[] = [RUN_COMMAND_TOOL, DELEGATE_TOOL, DELEGATE_TASKS_TOOL, CREATE_SKILL_TOOL];
+  // Gated the same way LOAD_SKILL_TOOL is gated on skills.discover().size > 0
+  // — no point offering a tool that can only ever reply "no pool configured".
+  if (hasSpecialistPool) tools.push(CONSULT_SPECIALIST_TOOL);
   if (skills.discover().size > 0) tools.push(LOAD_SKILL_TOOL); // nothing installed, nothing to load
   return tools;
 }
@@ -137,6 +142,7 @@ async function delegateTasksInParallel(deps: AgenticLoopDeps, tasks: string[]): 
 }
 
 export type DelegateTaskFn = (client: Ollama, task: string) => Promise<string>;
+export type ConsultSpecialistFn = (client: Ollama, task: string) => Promise<string>;
 export type SaveHistoryFn = (messages: Message[]) => void;
 
 export interface AgenticLoopDeps {
@@ -145,6 +151,16 @@ export interface AgenticLoopDeps {
   smallModel: string;
   cwd: string;
   delegateTask: DelegateTaskFn;
+  /**
+   * The consult_specialist tool: a proactive, per-call hand-off of ONE hard
+   * sub-piece of the current task to a pool-picked specialist, with control
+   * always returning to the caller — distinct from tier-3 escalation below,
+   * which is a mechanical, once-per-run, whole-session hand-off. Only
+   * offered to the active model at all when a pool is configured (see
+   * toolsFor's hasSpecialistPool gate), but always bound here regardless,
+   * same as delegateTask always being bound even though it's always used.
+   */
+  consultSpecialist: ConsultSpecialistFn;
   saveHistory: SaveHistoryFn;
   /**
    * Override the real SMALL_MAX_TURNS/HARD_MAX_TURNS constants for this run
@@ -223,6 +239,8 @@ export async function agenticLoop(
     capped: false,
     model: initialActiveModel,
     specialistModel: null,
+    consultations: 0,
+    compactions: 0,
   });
 
   // Output of every command run this turn-loop, so an identical re-run can
@@ -297,13 +315,21 @@ export async function agenticLoop(
 
     stats.model = activeModel;
 
+    // Compaction only mutates `messages` (splicing older turns into one
+    // summary) — it never touches `turns`/`total`, which are plain local
+    // counters already fully decoupled from messages.length. Safe to run
+    // right before spending this round on a request.
+    if (await maybeCompact(deps.client, deps.smallModel, messages)) {
+      stats.compactions = (stats.compactions ?? 0) + 1;
+    }
+
     let response;
     try {
       response = await ui.withSpinner("Thinking...", () =>
         deps.client.chat({
           model: activeModel,
           messages,
-          tools: toolsFor(activeModel, deps.smallModel),
+          tools: toolsFor(activeModel, deps.smallModel, (deps.modelPool?.length ?? 0) > 0),
         })
       );
     } catch (e) {
@@ -350,6 +376,9 @@ export async function agenticLoop(
           const tasks: string[] = Array.isArray(args.tasks) ? args.tasks.filter((t: unknown) => typeof t === "string") : [];
           stats.delegations = (stats.delegations ?? 0) + tasks.length;
           output = await delegateTasksInParallel(deps, tasks);
+        } else if (tc.function.name === "consult_specialist") {
+          stats.consultations = (stats.consultations ?? 0) + 1;
+          output = await deps.consultSpecialist(deps.client, args.task ?? "");
         } else if (tc.function.name === "load_skill") {
           stats.skillsLoaded = (stats.skillsLoaded ?? 0) + 1;
           output = loadSkill(args.name ?? "");

@@ -49,3 +49,18 @@ test("empty otherSkillsIndex produces no 'other skills' section", () => {
   const prompt = buildSystemPrompt({ ...BASE, otherSkillsIndex: "" });
   assert.doesNotMatch(prompt, /Other skills you can load/);
 });
+
+test("consult_specialist guidance is always present (unconditional, matching delegate_task's precedent) and distinguishable from it", () => {
+  const prompt = buildSystemPrompt(BASE);
+  assert.match(prompt, /consult_specialist tool is available to you/);
+  assert.match(prompt, /ONE genuinely hard sub-piece/);
+  assert.match(prompt, /not a hand-off, unlike running out of your tool-call budget/);
+  // must clearly separate consult_specialist's role from delegate_task's
+  assert.match(prompt, /not mechanical legwork \(that's what delegate_task\/delegate_tasks are for\)/);
+});
+
+test("a compaction note's SYSTEM NOTE prefix is called out as established fact, not a live instruction", () => {
+  const prompt = buildSystemPrompt(BASE);
+  assert.match(prompt, /SYSTEM NOTE: the following summarizes/);
+  assert.match(prompt, /established fact from earlier work, not a new instruction/);
+});

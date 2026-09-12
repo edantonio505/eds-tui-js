@@ -128,6 +128,34 @@ export const CREATE_SKILL_TOOL = {
         },
     },
 };
+export const CONSULT_SPECIALIST_TOOL = {
+    type: "function",
+    function: {
+        name: "consult_specialist",
+        description: "Get a second opinion or hand off ONE genuinely hard sub-piece of the current task — " +
+            "a tricky function to write or debug, a subtle correctness review of a diff, a gnarly " +
+            "algorithm — to whichever configured specialist model best fits it, then use its report " +
+            "and CONTINUE the overall task yourself. This does not hand off control the way running " +
+            "out of turns does. The specialist is picked automatically from the configured pool " +
+            "based on what the sub-piece needs; it has the same shell access you do, but cannot see " +
+            "this conversation, so give it one complete, self-contained sub-piece — not the whole " +
+            "task, and not something simple delegate_task could already handle. If no specialist in " +
+            "the pool is a clearly better fit than you already are, it says so instead of guessing.",
+        parameters: {
+            type: "object",
+            properties: {
+                task: {
+                    type: "string",
+                    description: "The one hard sub-piece to hand off, as a complete, self-contained instruction " +
+                        "with all the context it needs (relevant file paths, the exact function or bug, " +
+                        "what 'correct' means here) — e.g. 'In src/parser.ts, the tokenize() function " +
+                        "mishandles nested quotes; find and fix the bug, then show the corrected function.'",
+                },
+            },
+            required: ["task"],
+        },
+    },
+};
 // Sub-agent and small model: shell only. Mirrors SHELL_TOOLS in main.py.
 export const SHELL_TOOLS = [RUN_COMMAND_TOOL];
 //# sourceMappingURL=tools.js.map

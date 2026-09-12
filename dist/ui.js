@@ -153,6 +153,18 @@ export function printSubagentFailure(message) {
     console.log(chalk.red(`     delegation failed: ${message}`));
     console.log();
 }
+export function printConsultLabel(model, task) {
+    console.log(chalk.bold.cyan("  └─ consulting ") + chalk.bold.cyan(model) + chalk.dim(`  ${task}`));
+    console.log();
+}
+export function printConsultResult(text) {
+    console.log(chalk.dim.cyan(text));
+    console.log();
+}
+export function printConsultFailure(message) {
+    console.log(chalk.red(`     consult failed: ${message}`));
+    console.log();
+}
 export function printStatusLine(model, skillName) {
     let line = chalk.dim(`  ${model}`);
     if (skillName)

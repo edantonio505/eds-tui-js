@@ -18,6 +18,7 @@ function baseDeps(client: Ollama, overrides: Partial<AgenticLoopDeps> = {}): Age
     smallModel: SMALL,
     cwd: CWD,
     delegateTask: async () => "delegated result",
+    consultSpecialist: async () => "consult result",
     saveHistory: () => {},
     ...overrides,
   };
@@ -252,20 +253,59 @@ test("delegate_task/load_skill/create_skill dispatch to the right handler and in
   }
 });
 
-test("toolsFor: the small model always gets shell-only tools, regardless of skills installed", () => {
-  const tools = toolsFor(SMALL, SMALL);
+test("consult_specialist dispatches to deps.consultSpecialist and increments stats.consultations", async () => {
+  let callIndex = 0;
+  let consultedTask = "";
+  const client = {
+    chat: async () => {
+      callIndex += 1;
+      if (callIndex === 1) {
+        return {
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [{ function: { name: "consult_specialist", arguments: { task: "write a tricky regex" } } }],
+          } as Message,
+        };
+      }
+      return finalResponse("done, incorporating the consult");
+    },
+  } as unknown as Ollama;
+
+  const stats: any = {};
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  await agenticLoop(
+    baseDeps(client, {
+      consultSpecialist: async (_c, task) => {
+        consultedTask = task;
+        return "Consultation with some-specialist concluded:\nhere is the regex";
+      },
+    }),
+    messages,
+    MAIN,
+    stats
+  );
+
+  assert.equal(stats.consultations, 1);
+  assert.equal(consultedTask, "write a tricky regex");
+  const toolResults = messages.filter((m) => m.role === "tool").map((m) => m.content);
+  assert.ok(toolResults.some((c) => c.includes("here is the regex")));
+});
+
+test("toolsFor: the small model always gets shell-only tools, regardless of skills installed or a pool being configured", () => {
+  const tools = toolsFor(SMALL, SMALL, true);
   assert.deepEqual(
     tools.map((t) => t.function.name),
     ["run_command"]
   );
 });
 
-test("toolsFor: the main model gets the full set, minus load_skill when no skills exist", () => {
+test("toolsFor: the main model gets the full set, minus load_skill when no skills exist, minus consult_specialist when no pool is configured", () => {
   const tmp = mkdtempSync(join(tmpdir(), "eds-tui-agent-toolsfor-"));
   const realDir = skills.SKILLS_DIR;
   skills.setSkillsDir(tmp);
   try {
-    const names = toolsFor(MAIN, SMALL).map((t) => t.function.name);
+    const names = toolsFor(MAIN, SMALL, false).map((t) => t.function.name);
     assert.deepEqual(names, ["run_command", "delegate_task", "delegate_tasks", "create_skill"]);
   } finally {
     skills.setSkillsDir(realDir);
@@ -282,7 +322,7 @@ test("toolsFor: the main model gets load_skill added once at least one skill exi
     writeFileSync(join(tmp, "x", "SKILL.md"), "---\ndescription: x.\n---\n\nx.\n");
     skills.resetCache();
 
-    const names = toolsFor(MAIN, SMALL).map((t) => t.function.name);
+    const names = toolsFor(MAIN, SMALL, false).map((t) => t.function.name);
     assert.deepEqual(names, ["run_command", "delegate_task", "delegate_tasks", "create_skill", "load_skill"]);
   } finally {
     skills.setSkillsDir(realDir);
@@ -295,11 +335,36 @@ test("toolsFor: a third (specialist) model that is neither main nor small also g
   const realDir = skills.SKILLS_DIR;
   skills.setSkillsDir(tmp);
   try {
-    const tools = toolsFor("some-specialist-model:8b", SMALL);
+    const tools = toolsFor("some-specialist-model:8b", SMALL, false);
     assert.deepEqual(
       tools.map((t) => t.function.name),
       ["run_command", "delegate_task", "delegate_tasks", "create_skill"]
     );
+  } finally {
+    skills.setSkillsDir(realDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("toolsFor: consult_specialist is added for the main model (and a third specialist model) when a pool is configured", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "eds-tui-agent-toolsfor-4-"));
+  const realDir = skills.SKILLS_DIR;
+  skills.setSkillsDir(tmp);
+  try {
+    assert.deepEqual(toolsFor(MAIN, SMALL, true).map((t) => t.function.name), [
+      "run_command",
+      "delegate_task",
+      "delegate_tasks",
+      "create_skill",
+      "consult_specialist",
+    ]);
+    assert.deepEqual(toolsFor("some-specialist-model:8b", SMALL, true).map((t) => t.function.name), [
+      "run_command",
+      "delegate_task",
+      "delegate_tasks",
+      "create_skill",
+      "consult_specialist",
+    ]);
   } finally {
     skills.setSkillsDir(realDir);
     rmSync(tmp, { recursive: true, force: true });
@@ -571,4 +636,45 @@ test("delegate_tasks: non-string entries in the tasks array are filtered out rat
   assert.equal(stats.delegations, 1, "only the one real string task counted");
   const toolMsg = messages.find((m) => m.role === "tool");
   assert.match(toolMsg!.content, /Task 1: real task\nResult: handled: real task/);
+});
+
+// ---------- compaction integration ----------
+
+test("compaction: an oversized pre-existing transcript is compacted before the first round runs, without disturbing turn-budget bookkeeping", async () => {
+  const messages: Message[] = [{ role: "user", content: "go" }];
+  for (let i = 1; i <= 10; i++) {
+    messages.push({
+      role: "assistant",
+      content: "",
+      tool_calls: [{ function: { name: "run_command", arguments: { command: `step-${i}` } } }],
+    } as Message);
+    messages.push({ role: "tool", content: `${"x".repeat(7000)} marker-${i}` } as Message);
+  }
+  const totalBefore = messages.reduce((n, m) => n + (m.content ?? "").length, 0);
+  assert.ok(totalBefore > 60_000, "fixture must actually exceed the compaction threshold");
+
+  const client = {
+    chat: async (req: any) => {
+      if (req.tools === undefined) {
+        // maybeCompact's own summarization call — no `tools` key at all,
+        // unlike the main loop's own "Thinking..." call, which always sets one.
+        return { message: { role: "assistant", content: "condensed summary" } as Message };
+      }
+      return finalResponse("concluded normally");
+    },
+  } as unknown as Ollama;
+
+  const stats: any = {};
+  const result = await agenticLoop(baseDeps(client), messages, MAIN, stats);
+
+  assert.equal(result, "concluded normally");
+  assert.equal(stats.compactions, 1);
+  // turns/total are plain local counters, fully decoupled from messages.length
+  // -- compaction mutating `messages` must not perturb them.
+  assert.equal(stats.turns, 1);
+  assert.equal(stats.capped, false);
+  assert.equal(stats.escalated, false);
+
+  const totalAfter = messages.reduce((n, m) => n + (m.content ?? "").length, 0);
+  assert.ok(totalAfter < totalBefore, "the transcript must actually have shrunk");
 });

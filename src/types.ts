@@ -25,4 +25,8 @@ export interface RunStats {
   model: string;
   /** The tier-3 specialist model escalated to this run, if any (see model-pool.ts). Not part of the original Python stats dict — new for the specialist-router feature. */
   specialistModel: string | null;
+  /** Count of consult_specialist tool calls this run (see consult.ts). */
+  consultations: number;
+  /** Count of times maybeCompact() actually collapsed part of the transcript this run (see compaction.ts). */
+  compactions: number;
 }

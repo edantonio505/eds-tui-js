@@ -13,8 +13,9 @@ import { makeClient, DEFAULT_MAIN_MODEL, DEFAULT_SMALL_MODEL } from "./client.js
 import { triage } from "./triage.js";
 import { resolveModel, pinFor } from "./resolve-model.js";
 import { buildSystemPrompt } from "./prompt-builder.js";
-import { agenticLoop } from "./agent.js";
+import { agenticLoop, HARD_MAX_TURNS } from "./agent.js";
 import { makeDelegateTask } from "./subagent.js";
+import { makeConsultSpecialist } from "./consult.js";
 import { loadPool } from "./model-pool.js";
 import * as skills from "./skills.js";
 import * as ui from "./ui.js";
@@ -220,7 +221,7 @@ async function main() {
     const systemPrompt = buildSystemPrompt({
         cwd: process.cwd(),
         appDir: APP_DIR,
-        hardMaxTurns: 14,
+        hardMaxTurns: HARD_MAX_TURNS,
         activeModel: active,
         mainModel,
         skill,
@@ -229,14 +230,16 @@ async function main() {
     });
     const messages = [{ role: "system", content: systemPrompt }, ...prior, { role: "user", content: request }];
     const stats = {};
+    const pool = loadPool();
     await agenticLoop({
         client,
         mainModel,
         smallModel,
         cwd: process.cwd(),
         delegateTask: makeDelegateTask(smallModel, process.cwd(), APP_DIR),
+        consultSpecialist: makeConsultSpecialist(pool, smallModel, process.cwd(), APP_DIR),
         saveHistory,
-        modelPool: loadPool(),
+        modelPool: pool,
     }, messages, active, stats);
 }
 main().catch((e) => {

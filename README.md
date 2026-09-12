@@ -89,7 +89,7 @@ ask --skill-new NAME # scaffold a new skill
 ask --login          # save a validated hub URL + relay API key to ~/.eds_tui/credentials.json
 ask --whoami         # show the saved login and re-check it still works
 ask --logout         # remove the saved login
-ask --test           # self-check: prove routing, skills, delegation, escalation and specialist routing work
+ask --test           # self-check: prove routing, skills, delegation, escalation, specialist routing and consult work
 ask --upgrade        # update to the latest version (npm install -g eds-tui@latest)
 ```
 
@@ -118,16 +118,25 @@ kicks in when a task genuinely proves too hard for the main model.
    request; if the specialist also can't finish, the run salvages an answer
    from whatever it found, same as tier 1→2.
 
+Separately, see [Consulting a specialist mid-task](#consulting-a-specialist-mid-task)
+for a way the main model can reach for a specialist **by choice**, on just
+one hard piece of a task, without giving up control of the rest.
+
 ### Configuring the specialist pool
 
-Not configured by default — tier 3 simply never fires until you set this up.
-Create `~/.eds_tui/models.json`:
+Not configured by default — tier 3 (and `consult_specialist`, below) simply
+never fire until you set this up. Create `~/.eds_tui/models.json`. A good
+starting point for coding work, using models live on the interdata network
+as of this writing (check what your own network actually serves — model
+availability changes; `qwen3-coder-next`, an earlier example here, has since
+been retired):
 
 ```json
 [
-  { "name": "deepseek-r1:8b", "good_for": "deep multi-step reasoning, math, logic, proofs" },
-  { "name": "qwen3-coder-next", "good_for": "code generation, refactoring, debugging large codebases" },
-  { "name": "llava:7b", "good_for": "describing or analyzing images" }
+  { "name": "deepseek-v4-pro:cloud", "good_for": "deep multi-step reasoning, tricky algorithms, hard bug root-causing, proofs of correctness" },
+  { "name": "kimi-k3:cloud", "good_for": "large-context codebase understanding, big multi-file refactors, long design/architecture writeups" },
+  { "name": "glm-5.3:cloud", "good_for": "fast iterative debugging, translating between languages/frameworks, general-purpose coding help" },
+  { "name": "qwen3-coder:30b", "good_for": "focused code generation and syntax-precise edits in a single file or function, fast local turnaround" }
 ]
 ```
 
@@ -139,30 +148,41 @@ expecting a model to infer intent from a bare name. Keep this list small and
 genuinely differentiated: a live interdata-style network can carry 20-40+
 models, many near-duplicate variants of the same base model at different
 sizes or hosting — an undifferentiated dump of all of them doesn't give the
-small model anything real to route on.
+small model anything real to route on. The same pool file serves both tier-3
+(matched against the whole original request) and `consult_specialist`
+(matched against one sub-task at a time) — no duplication needed.
 
 A malformed or missing file degrades to "no specialist pool," never an
 error — same never-throws discipline the skills registry uses.
 
 ## Turn budget
 
-Each model gets up to 14 tool-call rounds per request (5 for a delegated
-sub-agent). **Escalation resets that budget** — the newly-active model
-inherits the transcript, not the rounds already spent, so a request that
-escalates does not leave the next tier with fewer rounds to finish an
-investigation it just walked into. (One documented exception: if a model's
-own request *errors out* rather than running out of rounds, the escalation
-that follows does *not* reset the counter — it keeps counting from wherever
-it was. A budget-exhaustion escalation and a request-failure escalation are
-different situations and get different treatment.)
+Each model gets up to 40 tool-call rounds per request (8 for a
+`consult_specialist` call, 5 for a delegated sub-agent). **Escalation resets
+that budget** — the newly-active model inherits the transcript, not the
+rounds already spent, so a request that escalates does not leave the next
+tier with fewer rounds to finish an investigation it just walked into. (One
+documented exception: if a model's own request *errors out* rather than
+running out of rounds, the escalation that follows does *not* reset the
+counter — it keeps counting from wherever it was. A budget-exhaustion
+escalation and a request-failure escalation are different situations and get
+different treatment.)
 
-Two things keep a run from ending empty-handed:
+Three things keep a long run from either ending empty-handed or blowing up
+its own context window:
 
 - **Repeated commands are not re-run.** If the model asks for a command it
   already ran this session, the earlier output is replayed with a note
   saying so, and the round is not spent on the shell.
 - **Command output is clipped at ~8,000 characters**, head and tail kept,
   with a note telling the model to narrow the search.
+- **A long transcript is compacted, not left to grow forever.** Once a
+  run's total message content passes ~60,000 characters, `ask` collapses
+  the *middle* of the conversation into one short summary (produced by the
+  small model), while always keeping the system prompt, the current
+  request, and the last 3 rounds verbatim. This is what actually makes long
+  coding sessions viable — a 40-round budget would otherwise mean sending
+  an ever-growing transcript on every single round.
 - **Running out of rounds produces an answer, not an error.** At the cap,
   `ask` first tries tier-3 escalation (if configured); failing that, it
   makes one final call with the tools removed, so the model has to conclude
@@ -243,13 +263,37 @@ never has to know or care which physical node ends up doing the work.
 Measured live against a real multi-node network: 4 independent delegated
 tasks took **2.07x longer run one at a time than run concurrently**.
 
+## Consulting a specialist mid-task
+
+`delegate_task`/`delegate_tasks` hand off mechanical legwork to the *small*
+model. Tier-3 escalation (above) hands off the *entire remaining session* to
+a specialist, but only mechanically, as a last resort, once the main model
+has already run out of turns or hit an error.
+
+`consult_specialist` is a third, different thing: the main model (or a
+tier-3 specialist standing in for it) can reach for it **by choice**, any
+number of times, for just ONE genuinely hard sub-piece of what it's working
+on — a tricky function, a subtle bug, an algorithm it isn't confident about
+— while staying in charge of the task overall. It automatically picks
+whichever pool entry (same `~/.eds_tui/models.json` as tier-3) best fits
+that specific sub-piece, hands it a self-contained brief (it can't see the
+rest of the conversation), and runs its own bounded loop (up to 8 rounds)
+with shell access. The result comes back labeled with which specialist
+answered, and the main model picks up where it left off. If no specialist in
+the pool is a clearly better fit, it says so instead of guessing — same
+policy as tier-3's own routing.
+
+Only offered to the model at all when a pool is configured — same gating
+`load_skill` gets when no skills exist.
+
 ## Self-check
 
 `ask --test` exercises the whole arrangement against your live server and
 reports pass/fail, exiting nonzero if anything broke — including a real
-tier-3 escalation to a specialist model if `~/.eds_tui/models.json` is
-configured for your network. The skill checks build a throwaway fixture in a
-temp directory — they never touch your real `~/.eds_tui/skills`.
+tier-3 escalation and a real `consult_specialist` call if
+`~/.eds_tui/models.json` is configured for your network. The skill checks
+build a throwaway fixture in a temp directory — they never touch your real
+`~/.eds_tui/skills`.
 
 ## Conversation history
 

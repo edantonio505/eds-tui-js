@@ -18,11 +18,12 @@
 //      behavior; conflating them would be a real, subtle bug.
 import * as skills from "./skills.js";
 import { runCommandOnce } from "./exec.js";
-import { RUN_COMMAND_TOOL, DELEGATE_TOOL, DELEGATE_TASKS_TOOL, LOAD_SKILL_TOOL, CREATE_SKILL_TOOL, SHELL_TOOLS, } from "./tools.js";
+import { RUN_COMMAND_TOOL, DELEGATE_TOOL, DELEGATE_TASKS_TOOL, LOAD_SKILL_TOOL, CREATE_SKILL_TOOL, CONSULT_SPECIALIST_TOOL, SHELL_TOOLS, } from "./tools.js";
+import { maybeCompact } from "./compaction.js";
 import * as ui from "./ui.js";
 import { pickSpecialistModel } from "./model-pool.js";
 export const SMALL_MAX_TURNS = 6; // tool-call rounds before escalating off the small model
-export const HARD_MAX_TURNS = 14; // absolute ceiling, prevents a runaway loop
+export const HARD_MAX_TURNS = 40; // absolute ceiling, prevents a runaway loop
 const WRAP_UP_NUDGE = (left) => `SYSTEM NOTE: you have ${left} tool-call round(s) left before you are cut off. ` +
     "Stop widening the search. Run something only if it would change your conclusion; " +
     "otherwise answer now from what you already have, and say which parts you could " +
@@ -47,10 +48,14 @@ export const FINAL_ANSWER_NUDGE = "You have used the entire tool-call budget for
  * tools to main and to any specialist alike, and restricts only the one
  * model that should actually be restricted.
  */
-export function toolsFor(activeModel, smallModel) {
+export function toolsFor(activeModel, smallModel, hasSpecialistPool) {
     if (activeModel === smallModel)
         return SHELL_TOOLS;
     const tools = [RUN_COMMAND_TOOL, DELEGATE_TOOL, DELEGATE_TASKS_TOOL, CREATE_SKILL_TOOL];
+    // Gated the same way LOAD_SKILL_TOOL is gated on skills.discover().size > 0
+    // — no point offering a tool that can only ever reply "no pool configured".
+    if (hasSpecialistPool)
+        tools.push(CONSULT_SPECIALIST_TOOL);
     if (skills.discover().size > 0)
         tools.push(LOAD_SKILL_TOOL); // nothing installed, nothing to load
     return tools;
@@ -152,6 +157,8 @@ export async function agenticLoop(deps, messages, initialActiveModel, stats = {}
         capped: false,
         model: initialActiveModel,
         specialistModel: null,
+        consultations: 0,
+        compactions: 0,
     });
     // Output of every command run this turn-loop, so an identical re-run can
     // be answered from here instead of spending a round to learn nothing.
@@ -219,12 +226,19 @@ export async function agenticLoop(deps, messages, initialActiveModel, stats = {}
             turns = 1;
         }
         stats.model = activeModel;
+        // Compaction only mutates `messages` (splicing older turns into one
+        // summary) — it never touches `turns`/`total`, which are plain local
+        // counters already fully decoupled from messages.length. Safe to run
+        // right before spending this round on a request.
+        if (await maybeCompact(deps.client, deps.smallModel, messages)) {
+            stats.compactions = (stats.compactions ?? 0) + 1;
+        }
         let response;
         try {
             response = await ui.withSpinner("Thinking...", () => deps.client.chat({
                 model: activeModel,
                 messages,
-                tools: toolsFor(activeModel, deps.smallModel),
+                tools: toolsFor(activeModel, deps.smallModel, (deps.modelPool?.length ?? 0) > 0),
             }));
         }
         catch (e) {
@@ -270,6 +284,10 @@ export async function agenticLoop(deps, messages, initialActiveModel, stats = {}
                     const tasks = Array.isArray(args.tasks) ? args.tasks.filter((t) => typeof t === "string") : [];
                     stats.delegations = (stats.delegations ?? 0) + tasks.length;
                     output = await delegateTasksInParallel(deps, tasks);
+                }
+                else if (tc.function.name === "consult_specialist") {
+                    stats.consultations = (stats.consultations ?? 0) + 1;
+                    output = await deps.consultSpecialist(deps.client, args.task ?? "");
                 }
                 else if (tc.function.name === "load_skill") {
                     stats.skillsLoaded = (stats.skillsLoaded ?? 0) + 1;

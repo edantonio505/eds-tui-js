@@ -185,6 +185,21 @@ export function printSubagentFailure(message: string): void {
   console.log();
 }
 
+export function printConsultLabel(model: string, task: string): void {
+  console.log(chalk.bold.cyan("  └─ consulting ") + chalk.bold.cyan(model) + chalk.dim(`  ${task}`));
+  console.log();
+}
+
+export function printConsultResult(text: string): void {
+  console.log(chalk.dim.cyan(text));
+  console.log();
+}
+
+export function printConsultFailure(message: string): void {
+  console.log(chalk.red(`     consult failed: ${message}`));
+  console.log();
+}
+
 export function printStatusLine(model: string, skillName?: string | null): void {
   let line = chalk.dim(`  ${model}`);
   if (skillName) line += chalk.dim.cyan(`  ·  skill: ${skillName}`);

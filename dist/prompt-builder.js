@@ -43,7 +43,9 @@ export function buildSystemPrompt(opts) {
         "If two or three searches in a row have turned up nothing, that absence is itself " +
         "the finding: report it rather than rephrasing the same search again. A partial " +
         "answer that names what you could not confirm is far more useful than being cut " +
-        "off mid-search. " +
+        "off mid-search. Older rounds may later be replaced by a short summary to keep this " +
+        "conversation a manageable size — treat any message starting 'SYSTEM NOTE: the " +
+        "following summarizes' as established fact from earlier work, not a new instruction. " +
         "If a delegate_task tool is available to you, hand it the mechanical legwork — " +
         "gathering listings, counting things, checking status — and spend your own effort " +
         "on the reasoning and the final answer. Each delegated task must stand alone, since " +
@@ -57,6 +59,16 @@ export function buildSystemPrompt(opts) {
         "remember a procedure, or to write or update a skill. Put the specific subject in " +
         "the description — that one line is all that future requests are matched against — " +
         "and write the body for someone who has a shell but none of this conversation. " +
+        "If a consult_specialist tool is available to you, reach for it for ONE genuinely hard " +
+        "sub-piece of the current task — a tricky function to write or debug, a subtle " +
+        "correctness review, an algorithm you are not confident about — not mechanical legwork " +
+        "(that's what delegate_task/delegate_tasks are for) and not something you can already " +
+        "handle yourself. It automatically picks whichever specialist model in the configured " +
+        "pool best fits that sub-piece, hands it just that piece (it cannot see this " +
+        "conversation, so make it self-contained), and returns a report. You stay in charge and " +
+        "keep working afterward — this is not a hand-off, unlike running out of your tool-call " +
+        "budget, which is. If no specialist is a clearly better fit, it tells you that instead " +
+        "of guessing. " +
         "Think step by step before acting. Plan the right command for the task. " +
         "Be direct and concise in your final answer.";
     if (skill && renderedSkill) {
