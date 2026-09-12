@@ -4,17 +4,30 @@ Natural Language Command Executor — a one-shot terminal AI assistant powered
 by a local (or network-routed) Ollama-compatible model.
 
 TypeScript rewrite of [edstui](https://github.com/edantonio505/edstui)
-(Python/pipx), published to npm so installing it is a plain package-manager
-pull over HTTPS — no `git clone`, no Python/pipx toolchain needed on the
-target machine at install time.
+(Python/pipx), designed to install as a plain package-manager pull over
+HTTPS — no Python/pipx toolchain needed on the target machine.
 
 ## Install
 
 ```bash
-npm install -g eds-tui
+curl -fsSL https://raw.githubusercontent.com/edantonio505/eds-tui-js/main/install.sh | bash
 ```
 
-Needs Node.js >=20. This gives you the `ask` command on PATH.
+Windows (PowerShell): `irm https://raw.githubusercontent.com/edantonio505/eds-tui-js/main/install.ps1 | iex`
+
+Needs Node.js >=20 and git. This gives you the `ask` command on PATH.
+
+**Why not `npm install -g eds-tui`** (the eventual, simpler intended form):
+the npm registry publish is currently stuck on an old version (a
+publishing-account access issue, unrelated to this repo's code), and
+separately, `npm install -g git+https://github.com/...` for this repo has
+been confirmed unreliable — it can report success while silently producing
+an incomplete install, with no visible error. `install.sh`/`install.ps1`
+clone with a plain `git clone`, then `npm pack` the local checkout (no
+network dependency resolution involved) and install that tarball — this
+sidesteps both problems and has been reliable in repeated testing where the
+direct methods were not. `ask --upgrade` uses the same mechanism. Safe to
+re-run either to upgrade.
 
 ## Configuration
 
@@ -90,7 +103,7 @@ ask --login          # save a validated hub URL + relay API key to ~/.eds_tui/cr
 ask --whoami         # show the saved login and re-check it still works
 ask --logout         # remove the saved login
 ask --test           # self-check: prove routing, skills, delegation, escalation, specialist routing and consult work
-ask --upgrade        # update to the latest version (npm install -g eds-tui@latest)
+ask --upgrade        # update to the latest version (clone + pack + install, see Install above)
 ```
 
 ## Model routing
