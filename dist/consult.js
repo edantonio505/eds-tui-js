@@ -61,7 +61,7 @@ export function makeConsultSpecialist(pool, smallModel, cwd, appDir) {
         for (let i = 0; i < CONSULT_MAX_TURNS; i++) {
             let response;
             try {
-                response = await ui.withSpinner(`${CONSULT_INDENT}${specialist} working...`, () => client.chat({ model: specialist, messages, tools: SHELL_TOOLS }));
+                response = await ui.withSpinner(`${CONSULT_INDENT}${ui.displayModel(specialist)} working...`, () => client.chat({ model: specialist, messages, tools: SHELL_TOOLS }));
             }
             catch (e) {
                 const message = e instanceof Error ? e.message : String(e);
@@ -96,7 +96,7 @@ export function makeConsultSpecialist(pool, smallModel, cwd, appDir) {
         }
         let result = "";
         try {
-            const response = await ui.withSpinner(`${CONSULT_INDENT}${specialist} wrapping up...`, () => client.chat({
+            const response = await ui.withSpinner(`${CONSULT_INDENT}${ui.displayModel(specialist)} wrapping up...`, () => client.chat({
                 model: specialist,
                 messages: [...messages, { role: "user", content: FINAL_ANSWER_NUDGE }],
             }));

@@ -60,7 +60,7 @@ export function makeDelegateTask(smallModel: string, cwd: string, appDir: string
     for (let i = 0; i < SUBAGENT_MAX_TURNS; i++) {
       let response;
       try {
-        response = await ui.withSpinner(`${SUB_INDENT}${smallModel} working...`, () =>
+        response = await ui.withSpinner(`${SUB_INDENT}${ui.displayModel(smallModel)} working...`, () =>
           client.chat({ model: smallModel, messages, tools: SHELL_TOOLS })
         );
       } catch (e) {
@@ -101,7 +101,7 @@ export function makeDelegateTask(smallModel: string, cwd: string, appDir: string
     // and making it redo the work, ask for a conclusion with tools removed.
     let result = "";
     try {
-      const response = await ui.withSpinner(`${SUB_INDENT}${smallModel} wrapping up...`, () =>
+      const response = await ui.withSpinner(`${SUB_INDENT}${ui.displayModel(smallModel)} wrapping up...`, () =>
         client.chat({
           model: smallModel,
           messages: [...messages, { role: "user", content: FINAL_ANSWER_NUDGE }],

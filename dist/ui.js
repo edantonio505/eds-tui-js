@@ -14,6 +14,16 @@ import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 marked.use(markedTerminal());
 const BOX_BORDER_AND_PADDING_COLS = 6; // 1 border char + 2 padding each side, ×2 sides
+/**
+ * Purely cosmetic: strips a trailing ":cloud" tag (e.g. "deepseek-v4-pro:cloud"
+ * → "deepseek-v4-pro") for anything printed to the terminal. The real name,
+ * ":cloud" intact, is still what's actually sent in every API call and what
+ * tool results/pool routing use internally — this only ever touches what a
+ * human reads, never a value compared or dispatched on.
+ */
+export function displayModel(name) {
+    return name.replace(/:cloud$/, "");
+}
 /** Run fn() while a spinner shows `text`; the spinner is always stopped before fn's result is used, so callers never race it with their own output. */
 export async function withSpinner(text, fn) {
     const spinner = ora({ text: chalk.dim.italic(text) }).start();
@@ -84,19 +94,19 @@ export function printRunningTools() {
     console.log();
 }
 export function printEscalating(toModel) {
-    console.log(chalk.dim.yellow(`  ↑ escalating to ${toModel}`));
+    console.log(chalk.dim.yellow(`  ↑ escalating to ${displayModel(toModel)}`));
     console.log();
 }
 export function printEscalatingOnFailure(fromModel, toModel, message) {
-    console.log(chalk.dim.yellow(`  ↑ ${fromModel} failed (${message}), escalating to ${toModel}`));
+    console.log(chalk.dim.yellow(`  ↑ ${displayModel(fromModel)} failed (${message}), escalating to ${displayModel(toModel)}`));
     console.log();
 }
 export function printEscalatingToSpecialist(toModel) {
-    console.log(chalk.dim.yellow(`  ↑ escalating to specialist model ${toModel}`));
+    console.log(chalk.dim.yellow(`  ↑ escalating to specialist model ${displayModel(toModel)}`));
     console.log();
 }
 export function printModelRequestFailed(model, message) {
-    console.log(chalk.red(`  ${model} request failed (${message})`));
+    console.log(chalk.red(`  ${displayModel(model)} request failed (${message})`));
     console.log();
 }
 export function printBudgetSpent() {
@@ -142,7 +152,7 @@ export function printDelegatingTasksHeader(tasks) {
     console.log();
 }
 export function printSubagentLabel(model, task) {
-    console.log(chalk.bold.magenta("  └─ ") + chalk.bold.magenta(model) + chalk.dim(`  ${task}`));
+    console.log(chalk.bold.magenta("  └─ ") + chalk.bold.magenta(displayModel(model)) + chalk.dim(`  ${task}`));
     console.log();
 }
 export function printSubagentResult(text) {
@@ -154,7 +164,7 @@ export function printSubagentFailure(message) {
     console.log();
 }
 export function printConsultLabel(model, task) {
-    console.log(chalk.bold.cyan("  └─ consulting ") + chalk.bold.cyan(model) + chalk.dim(`  ${task}`));
+    console.log(chalk.bold.cyan("  └─ consulting ") + chalk.bold.cyan(displayModel(model)) + chalk.dim(`  ${task}`));
     console.log();
 }
 export function printConsultResult(text) {
@@ -166,7 +176,7 @@ export function printConsultFailure(message) {
     console.log();
 }
 export function printStatusLine(model, skillName) {
-    let line = chalk.dim(`  ${model}`);
+    let line = chalk.dim(`  ${displayModel(model)}`);
     if (skillName)
         line += chalk.dim.cyan(`  ·  skill: ${skillName}`);
     console.log(line);

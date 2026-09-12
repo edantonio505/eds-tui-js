@@ -31,6 +31,7 @@ import { makeConsultSpecialist } from "./consult.js";
 import { clipOutput, MAX_OUTPUT_CHARS } from "./clip.js";
 import { runCommandOnce } from "./exec.js";
 import * as skills from "./skills.js";
+import { displayModel } from "./ui.js";
 
 const SIMPLE_PROBE = "how many .py files are in this directory";
 const COMPLEX_PROBE =
@@ -105,7 +106,7 @@ export async function selfCheck(): Promise<void> {
 
   console.log();
   console.log(chalk.bold.whiteBright("  eds tui self-check"));
-  console.log(chalk.dim(`  main: ${mainModel}    small: ${smallModel}`));
+  console.log(chalk.dim(`  main: ${displayModel(mainModel)}    small: ${displayModel(smallModel)}`));
   console.log();
 
   async function check(name: string, fn: CheckFn): Promise<void> {
@@ -151,26 +152,26 @@ export async function selfCheck(): Promise<void> {
 
   async function triageSimple(): Promise<CheckResult> {
     const { model } = await triage(client, SIMPLE_PROBE, mainModel, smallModel);
-    return [model === smallModel, `→ ${model}`];
+    return [model === smallModel, `→ ${displayModel(model)}`];
   }
 
   async function triageComplex(): Promise<CheckResult> {
     const { model } = await triage(client, COMPLEX_PROBE, mainModel, smallModel);
-    return [model === mainModel, `→ ${model}`];
+    return [model === mainModel, `→ ${displayModel(model)}`];
   }
 
   async function fastForcesSmall(): Promise<CheckResult> {
     const { model } = await resolveModel(COMPLEX_PROBE, triageFn, { main: mainModel, small: smallModel }, {
       forceFast: true,
     });
-    return [model === smallModel, `→ ${model}`];
+    return [model === smallModel, `→ ${displayModel(model)}`];
   }
 
   async function smartForcesMain(): Promise<CheckResult> {
     const { model } = await resolveModel(SIMPLE_PROBE, triageFn, { main: mainModel, small: smallModel }, {
       forceSmart: true,
     });
-    return [model === mainModel, `→ ${model}`];
+    return [model === mainModel, `→ ${displayModel(model)}`];
   }
 
   async function delegationWorks(): Promise<CheckResult> {
@@ -182,7 +183,7 @@ export async function selfCheck(): Promise<void> {
     const stats: any = {};
     await agenticLoop(baseDeps(), messages, mainModel, stats);
     const n = stats.delegations ?? 0;
-    return [n >= 1, `${mainModel} spawned ${smallModel} ×${n}`];
+    return [n >= 1, `${displayModel(mainModel)} spawned ${displayModel(smallModel)} ×${n}`];
   }
 
   async function escalationFires(): Promise<CheckResult> {
@@ -193,7 +194,7 @@ export async function selfCheck(): Promise<void> {
     ];
     const stats: any = {};
     await agenticLoop(baseDeps({ smallMaxTurns: 1 }), messages, smallModel, stats);
-    return [Boolean(stats.escalated), `turn cap 1 → ${stats.model} after ${stats.turns} turns`];
+    return [Boolean(stats.escalated), `turn cap 1 → ${displayModel(stats.model)} after ${stats.turns} turns`];
   }
 
   async function capStillAnswers(): Promise<CheckResult> {
@@ -216,7 +217,7 @@ export async function selfCheck(): Promise<void> {
     ];
     const stats: any = {};
     await agenticLoop(baseDeps({ hardMaxTurns: 1, modelPool: SPECIALIST_FIXTURE_POOL }), messages, mainModel, stats);
-    return [Boolean(stats.specialistModel), `hard cap 1 → escalated to ${stats.specialistModel ?? "(none)"}`];
+    return [Boolean(stats.specialistModel), `hard cap 1 → escalated to ${stats.specialistModel ? displayModel(stats.specialistModel) : "(none)"}`];
   }
 
   async function consultSpecialistWorks(): Promise<CheckResult> {
@@ -241,7 +242,7 @@ export async function selfCheck(): Promise<void> {
     const ok = (stats.consultations ?? 0) >= 1 && stats.model === mainModel;
     return [
       ok,
-      `consultations=${stats.consultations ?? 0}, ended on ${stats.model} (main=${mainModel})`,
+      `consultations=${stats.consultations ?? 0}, ended on ${displayModel(stats.model)} (main=${displayModel(mainModel)})`,
     ];
   }
 
@@ -262,7 +263,7 @@ export async function selfCheck(): Promise<void> {
 
   async function badSmallModelFallsBack(): Promise<CheckResult> {
     const { model } = await triage(client, SIMPLE_PROBE, mainModel, "does-not-exist:1b");
-    return [model === mainModel, `→ ${model}`];
+    return [model === mainModel, `→ ${displayModel(model)}`];
   }
 
   async function withFixtureSkills<T>(fn: () => Promise<T>): Promise<T> {
@@ -307,7 +308,7 @@ export async function selfCheck(): Promise<void> {
       const stats: any = {};
       await agenticLoop(baseDeps(), messages, mainModel, stats);
       const n = stats.skillsLoaded ?? 0;
-      return [n >= 1, `${mainModel} called load_skill ×${n}`];
+      return [n >= 1, `${displayModel(mainModel)} called load_skill ×${n}`];
     });
   }
 
@@ -364,7 +365,7 @@ export async function selfCheck(): Promise<void> {
         skill,
       });
       const ok = pinned.model === smallModel && forced.model === mainModel;
-      return [ok, `pin → ${pinned.model}, --smart overrides → ${forced.model}`];
+      return [ok, `pin → ${displayModel(pinned.model)}, --smart overrides → ${displayModel(forced.model)}`];
     });
   }
 
