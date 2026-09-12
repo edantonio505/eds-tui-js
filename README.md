@@ -194,6 +194,19 @@ A skill is a reusable procedure you write once and `ask` loads when it is
 relevant — how *you* ship a release, how *you* restore a dev database, the
 three commands that actually diagnose a bad deploy on *your* machine.
 
+### Bundled default: `hard-task-claude`
+
+The very first time `ask` runs and finds no `~/.eds_tui/skills/` at all — a
+genuinely fresh install — it seeds one default skill there:
+`hard-task-claude`, which reaches for the [Claude Code](https://claude.com/claude-code)
+CLI (`claude -p`), if it's installed, for tasks that are truly beyond
+direct shell work (large multi-file refactors, a stuck bug, real algorithm
+design). This is **one-time only** — once the directory exists at all,
+nothing is ever seeded again, so editing or deleting it is a durable choice,
+not something that quietly comes back on the next run. If `claude` isn't
+installed, the skill says so and falls back to `consult_specialist` (below)
+or the model's own best effort, rather than pretending to have run it.
+
 They live in `~/.eds_tui/skills/`, one directory each:
 
 ```

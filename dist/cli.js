@@ -129,6 +129,10 @@ function shellFlagHint(text) {
 }
 async function main() {
     const argv = process.argv.slice(2);
+    // One-time-only: seeds eds-tui's bundled default skills the first time
+    // ~/.eds_tui/skills doesn't exist at all yet. A no-op on every later run,
+    // including after a user edits or deletes what was seeded.
+    skills.seedDefaultSkills();
     if (argv.includes("--upgrade"))
         selfUpgrade();
     if (argv.includes("--skills")) {

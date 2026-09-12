@@ -20,6 +20,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_SKILLS } from "./default-skills.js";
 export let SKILLS_DIR = join(homedir(), ".eds_tui", "skills");
 export const VALID_MODELS = ["main", "small", "any"];
 // A skill name becomes a directory name, and may arrive from a language
@@ -200,6 +201,30 @@ export function write(args) {
         throw new Error(`wrote ${path} but it did not parse back — inspect it by hand`);
     }
     return written;
+}
+/**
+ * Seed eds-tui's bundled default skills, but ONLY the very first time — i.e.
+ * only when SKILLS_DIR does not exist at all yet, the signal for "this is a
+ * genuinely fresh install on this machine." Once the directory exists,
+ * nothing here is ever written again: editing or deleting a seeded skill
+ * afterward is a durable choice, not something that silently reappears.
+ * Never throws — a failure here (e.g. a read-only home directory) must not
+ * block `ask` from running.
+ */
+export function seedDefaultSkills() {
+    try {
+        if (existsSync(SKILLS_DIR))
+            return;
+        for (const skill of DEFAULT_SKILLS) {
+            const directory = join(SKILLS_DIR, skill.name);
+            mkdirSync(directory, { recursive: true });
+            writeFileSync(join(directory, "SKILL.md"), skill.content);
+        }
+        resetCache();
+    }
+    catch {
+        // best-effort only
+    }
 }
 /** Drop the cache. Only --test needs this, when it repoints SKILLS_DIR at a fixture. */
 export function resetCache() {

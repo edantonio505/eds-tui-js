@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as skills from "./skills.js";
+import { DEFAULT_SKILLS } from "./default-skills.js";
 
 // Mirrors main.py's self-check with_fixture_skills(): --test must never
 // touch the user's real ~/.eds_tui/skills, so SKILLS_DIR is repointed at a
@@ -179,4 +180,44 @@ test("write: round-trips through the real parser — get() after write() returns
   const written = skills.write({ name: "new-skill", description: "does new things.", body: "1. step" });
   const reread = skills.get("new-skill");
   assert.deepEqual(reread, written);
+});
+
+// ---------- seedDefaultSkills ----------
+
+test("seedDefaultSkills: creates the directory and writes every bundled skill when it doesn't exist yet", () => {
+  const fresh = join(tmp, "genuinely-fresh"); // nested under tmp, so it does NOT exist yet
+  skills.setSkillsDir(fresh);
+
+  skills.seedDefaultSkills();
+
+  const found = skills.discover();
+  assert.equal(found.size, DEFAULT_SKILLS.length);
+  for (const s of DEFAULT_SKILLS) {
+    assert.ok(found.has(s.name), `${s.name} must be discovered after seeding`);
+  }
+});
+
+test("seedDefaultSkills: a no-op when the directory already exists, even if empty — never re-seeds", () => {
+  // beforeEach already pointed SKILLS_DIR at `tmp`, which mkdtempSync just
+  // created — existing-but-empty is exactly the case that must NOT seed.
+  skills.seedDefaultSkills();
+  assert.equal(skills.discover().size, 0);
+});
+
+test("seedDefaultSkills: never throws, even when it can't actually write (e.g. an ancestor path segment is a file, not a directory)", () => {
+  const blocker = join(tmp, "blocker-file");
+  writeFileSync(blocker, "not a directory");
+  skills.setSkillsDir(join(blocker, "skills")); // mkdirSync(..., {recursive:true}) must fail here (ENOTDIR)
+
+  assert.doesNotThrow(() => skills.seedDefaultSkills());
+});
+
+test("DEFAULT_SKILLS: every bundled skill is itself well-formed (parses, has a valid name/description/model)", () => {
+  for (const s of DEFAULT_SKILLS) {
+    const { meta, body } = skills.parseFrontmatter(s.content);
+    assert.ok(meta.description, `${s.name} needs a description`);
+    assert.ok(body.trim(), `${s.name} needs a non-empty body`);
+    assert.ok(skills.VALID_MODELS.includes((meta.model ?? "any") as any), `${s.name}'s model must be valid`);
+    assert.equal(meta.name, s.name);
+  }
 });
