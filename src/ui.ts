@@ -14,6 +14,20 @@ import stringWidth from "string-width";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 
+// package.json pins marked to ^12.0.2, NOT the newest release — confirmed
+// live (bisecting actual npm-published versions, not just reading
+// changelogs) that marked-terminal@7.3.0's renderer silently stops parsing
+// INLINE markdown (bold, etc.) nested inside list items somewhere between
+// marked 12.0.2 (works) and marked 13.0.3 (broken) — including against
+// 15.0.0, marked-terminal@7.3.0's own declared devDependency, which is
+// ALSO broken for this exact case despite being its "supported" version.
+// No exception is thrown; a request like "list what you can do" just
+// renders as completely literal, unstyled markdown (`**bold**`, `##`, `*`
+// bullets all shown as raw text) — this is silent, not a crash, so it will
+// not surface as a test failure if marked is ever bumped past 12.x. Do not
+// upgrade marked here without first re-verifying bold-in-list-items
+// actually renders (see ui.test.ts's deindentOverIndentedLists tests for a
+// related, independent bug this pin does NOT fix on its own).
 marked.use(markedTerminal() as any);
 
 const BOX_BORDER_AND_PADDING_COLS = 6; // 1 border char + 2 padding each side, ×2 sides
@@ -47,8 +61,55 @@ export function printHeader(cwd: string): void {
   console.log();
 }
 
+const LIST_MARKER = /^(\s*)(?:[-*+]|\d+[.)])\s/;
+const FENCE = /^\s*(`{3,}|~{3,})/;
+
+/**
+ * CommonMark treats 4+ leading spaces as an indented CODE block, not a
+ * list — a model that indents bullets under a heading (a harmless-looking
+ * style choice, and one this session's own real models default to) silently
+ * breaks rendering entirely: the whole block becomes literal, unparsed text
+ * — no bullets, no bold, nothing, since code blocks are verbatim by design.
+ * Shifts each contiguous run of list-marker lines left by its own minimum
+ * indentation (preserving relative nesting between sub-bullets), but only
+ * when that minimum is >= 4; a list already indented correctly (< 4) is
+ * left untouched. Never touches anything inside a fenced code block (``` or
+ * ~~~) — a real code sample that happens to start a line with "- " must
+ * stay exactly as written.
+ */
+export function deindentOverIndentedLists(content: string): string {
+  const lines = content.split("\n");
+  let inFence = false;
+  let i = 0;
+  while (i < lines.length) {
+    if (FENCE.test(lines[i]!)) {
+      inFence = !inFence;
+      i++;
+      continue;
+    }
+    if (inFence || !LIST_MARKER.test(lines[i]!)) {
+      i++;
+      continue;
+    }
+    let j = i;
+    let minIndent = Infinity;
+    while (j < lines.length && (lines[j] === "" || LIST_MARKER.test(lines[j]!))) {
+      const m = LIST_MARKER.exec(lines[j]!);
+      if (m) minIndent = Math.min(minIndent, m[1]!.length);
+      j++;
+    }
+    if (minIndent >= 4 && minIndent !== Infinity) {
+      for (let k = i; k < j; k++) {
+        if (lines[k] !== "") lines[k] = lines[k]!.slice(minIndent);
+      }
+    }
+    i = j;
+  }
+  return lines.join("\n");
+}
+
 export async function renderAnswer(content: string): Promise<void> {
-  const rendered = (await marked.parse(content || "")).toString().trimEnd();
+  const rendered = (await marked.parse(deindentOverIndentedLists(content || ""))).toString().trimEnd();
 
   // boxen just wraps pre-rendered text with border characters — unlike
   // Rich's Panel, it has no content-aware reflow of its own. A wide
